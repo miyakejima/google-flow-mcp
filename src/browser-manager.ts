@@ -9,6 +9,7 @@ import { FlowError } from "./errors.js";
 import { validateAccountId } from "./paths.js";
 import { FlowStore } from "./store.js";
 import { FLOW_URL } from "./types.js";
+import { isFlowPageUrl } from "./navigation.js";
 import type { TransferredCookie } from "./types.js";
 
 interface AccountBrowser {
@@ -154,7 +155,7 @@ export class BrowserManager {
       const browser = await chromium.connectOverCDP(session.endpoint);
       const context = browser.contexts()[0];
       if (!context) return null;
-      const page = context.pages().find((candidate) => candidate.url().startsWith("https://labs.google/"))
+      const page = context.pages().find((candidate) => isFlowPageUrl(candidate.url()))
         ?? context.pages()[0]
         ?? (await context.newPage());
       this.preparePage(page);
@@ -200,7 +201,7 @@ export class BrowserManager {
         const browser = await chromium.connectOverCDP(account.cdpUrl);
         const context = browser.contexts()[0];
         if (!context) throw new FlowError("browser_error", `No browser context was exposed at ${account.cdpUrl}.`);
-        const page = context.pages().find((candidate) => candidate.url().startsWith("https://labs.google/"))
+        const page = context.pages().find((candidate) => isFlowPageUrl(candidate.url()))
           ?? (await context.newPage());
         this.preparePage(page);
         this.browsers.set(accountId, { context, page, close: async () => undefined });
@@ -246,7 +247,7 @@ export class BrowserManager {
         await closeManagedBrowser(browser, processHandle);
         throw new FlowError("browser_error", "Managed Chromium started without a usable browser context.");
       }
-      const page = context.pages().find((candidate) => candidate.url().startsWith("https://labs.google/"))
+      const page = context.pages().find((candidate) => isFlowPageUrl(candidate.url()))
         ?? context.pages()[0]
         ?? (await context.newPage());
       this.preparePage(page);

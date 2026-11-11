@@ -216,6 +216,20 @@ FLOW_MCP_HEADLESS = "0"
 
 Open a new Codex task after changing MCP configuration. This does not restart Chromium or require another Google login.
 
+### Claude Code
+
+Register the server for your user (available in every project):
+
+```powershell
+claude mcp add google-flow --scope user -e FLOW_MCP_HEADLESS=0 -- node "C:\absolute\path\to\google-flow-mcp\dist\index.js"
+```
+
+Or commit a project-scoped `.mcp.json` (see [`examples/claude-code.mcp.json`](examples/claude-code.mcp.json)). Run `claude mcp list` to confirm it shows **connected**, then `/mcp` inside a session to see the `flow_*` tools.
+
+Long generations are fine with Claude Code's default tool timeout: generation tools return a persistent job ID, and the agent polls `flow_job_status`. To let one call wait longer, set `MCP_TOOL_TIMEOUT` (milliseconds) before launching `claude`.
+
+Claude Code also has browser and computer-use tools. The server's execution contract tells the agent never to operate `flow.google.com` or `labs.google` with them; if you see it try, stop it and ask it to use the `flow_*` tools.
+
 ### Google Antigravity
 
 Antigravity 2.0, Antigravity IDE, and Antigravity CLI support local stdio MCP servers. Clone into a stable directory—not Antigravity's disposable `scratch` directory—then run the supported installer:

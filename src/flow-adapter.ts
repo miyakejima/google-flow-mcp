@@ -14,7 +14,7 @@ import {
   selectNewMedia,
   type MediaSnapshot,
 } from "./media-selection.js";
-import { canonicalFlowProjectUrl } from "./navigation.js";
+import { canonicalFlowProjectUrl, isFlowPageUrl } from "./navigation.js";
 import { safeFileStem } from "./paths.js";
 import { FlowStore } from "./store.js";
 import {
@@ -33,6 +33,8 @@ import {
 } from "./types.js";
 
 const LOGIN_TEXT = /sign in|choose an account|use your google account/i;
+const NEW_PROJECT_TEXT = /new project|create project|start.*project|nuevo proyecto|crear proyecto|新项目|新建项目|创建项目/i;
+const PROJECT_LINK_SELECTOR = 'a[href*="/tools/flow/project/"], a[href^="/project/"], a[href^="https://flow.google.com/project/"]';
 const FAILURE_TEXT = /generation failed|couldn't generate|unable to generate|not enough (?:ai )?credits|blocked by policy|try again|no se (?:ha podido|pudo) generar|error al generar|puntos insuficientes|int[eé]ntalo de nuevo/i;
 
 interface AgentSettingsCapabilities {
@@ -155,7 +157,6 @@ export class FlowAdapter {
       let access = chooserCompleted
         ? await this.pageAccessState(page)
         : { signedIn: false, workspaceAvailable: false, pageKind: "signed_out" as const };
-      let noWorkspaceSince: number | undefined;
       while (!access.workspaceAvailable && Date.now() < deadline) {
         await page.waitForTimeout(1_000);
         if (!chooserCompleted && /^https:\/\/myaccount\.google\.com(?:\/|$)/i.test(page.url())) {
@@ -163,15 +164,14 @@ export class FlowAdapter {
           await page.goto(FLOW_URL, { waitUntil: "domcontentloaded" });
         }
         access = await this.pageAccessState(page);
-        if (chooserCompleted && access.signedIn && !access.workspaceAvailable) {
-          noWorkspaceSince ??= Date.now();
-          if (Date.now() - noWorkspaceSince >= 5_000) break;
-        } else {
-          noWorkspaceSince = undefined;
-        }
       }
+      // A signed-in page can still be loading or awaiting user onboarding.
+      // Respect the requested connection timeout before declaring it unavailable.
+      const connectionDiagnostic = !access.workspaceAvailable && selectionWaitSeconds > 0
+        ? `Current URL: ${page.url()}. Screenshot: ${await this.captureDiagnostic(page, `connect-${account.id}`) ?? "unavailable"}.`
+        : "";
       if (!access.workspaceAvailable && access.signedIn) {
-        const message = `Google account '${account.id}' is signed in, but Flow opened its public landing page instead of the generation workspace.`;
+        const message = `Google account '${account.id}' is signed in, but no Flow generation workspace was detected within ${selectionWaitSeconds} seconds. ${connectionDiagnostic}`;
         await this.store.markAccountAccessUnavailable(account.id, message);
         if (!attached) await this.browsers.reset(account.id);
         throw new FlowError(
@@ -184,7 +184,7 @@ export class FlowAdapter {
         );
       }
       if (!access.workspaceAvailable && selectionWaitSeconds > 0) {
-        const message = `The existing Google session received from Chromium was not accepted by Flow within ${selectionWaitSeconds} seconds.`;
+        const message = `The existing Google session received from Chromium was not accepted by Flow within ${selectionWaitSeconds} seconds. ${connectionDiagnostic}`;
         await this.store.markAccountNeedsReconnect(account.id, message);
         if (!attached) await this.browsers.reset(account.id);
         throw new FlowError(
@@ -445,7 +445,7 @@ export class FlowAdapter {
 
   private async readyPage(accountId: string, requireLogin: boolean, url?: string): Promise<Page> {
     const page = await this.browsers.pageFor(accountId);
-    if (!page.url().startsWith("https://labs.google/")) {
+    if (!isFlowPageUrl(page.url())) {
       await page.goto(url || FLOW_URL, { waitUntil: "domcontentloaded" });
     } else if (url && page.url() !== url) {
       await page.goto(url, { waitUntil: "domcontentloaded" });
@@ -498,9 +498,11 @@ export class FlowAdapter {
   }
 
   private async hasWorkspace(page: Page): Promise<boolean> {
-    if (/\/tools\/flow\/project\//i.test(page.url())) return true;
+    if (!isFlowPageUrl(page.url())) return false;
+    if (/\/(?:tools\/flow\/)?project\/[^/]+/i.test(new URL(page.url()).pathname)) return true;
     if (await firstVisible([this.promptLocator(page)])) return true;
-    if (await page.locator('a[href*="/tools/flow/project/"]').count().catch(() => 0)) return true;
+    if (await page.locator(PROJECT_LINK_SELECTOR).count().catch(() => 0)) return true;
+    if (await firstVisible([page.getByRole("button", { name: NEW_PROJECT_TEXT })])) return true;
     const createControls = page.locator("button").filter({ has: page.locator("i", { hasText: /^add_2$/ }) });
     return (await createControls.count().catch(() => 0)) > 0;
   }
@@ -527,8 +529,8 @@ export class FlowAdapter {
     return page.locator([
       'textarea[placeholder*="prompt" i]',
       'textarea[placeholder*="describe" i]',
-      '[contenteditable="true"][role="textbox"]',
-      '[contenteditable="true"][data-placeholder*="prompt" i]',
+      '[contenteditable="true"]',
+      '[contenteditable="plaintext-only"]',
       "textarea",
     ].join(", "));
   }
@@ -542,7 +544,8 @@ export class FlowAdapter {
     if (await firstVisible([this.promptLocator(page)])) return;
 
     await Promise.race([
-      page.locator('a[href*="/tools/flow/project/"]').first().waitFor({ state: "visible", timeout: 8_000 }),
+      page.getByRole("button", { name: NEW_PROJECT_TEXT }).last().waitFor({ state: "visible", timeout: 8_000 }),
+      page.locator(PROJECT_LINK_SELECTOR).first().waitFor({ state: "visible", timeout: 8_000 }),
       page.locator("button").filter({ has: page.locator("i", { hasText: /^add_2$/ }) }).last()
         .waitFor({ state: "visible", timeout: 8_000 }),
     ]).catch(() => undefined);
@@ -560,7 +563,7 @@ export class FlowAdapter {
     }
 
     const recentProject = await firstVisible([
-      page.locator('a[href*="/tools/flow/project/"]').last(),
+      page.locator(PROJECT_LINK_SELECTOR).last(),
     ]);
     if (recentProject) {
       await recentProject.click();
@@ -568,8 +571,7 @@ export class FlowAdapter {
     }
 
     const create = await firstVisible([
-      page.getByRole("button", { name: /new project|create project|start.*project/i }),
-      page.getByRole("button", { name: /nuevo proyecto|crear proyecto/i }),
+      page.getByRole("button", { name: NEW_PROJECT_TEXT }),
       page.locator("button").filter({ has: page.locator("i", { hasText: /^add_2$/ }) }).last(),
       page.getByText(/\+\s*new project|new project/i),
     ]);

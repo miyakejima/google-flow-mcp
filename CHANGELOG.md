@@ -2,6 +2,23 @@
 
 All notable changes to Google Flow MCP are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Recognize Flow's new `flow.google.com` origin alongside legacy `labs.google/fx/tools/flow`, rejecting lookalike hosts (fixes account connection failing with `flow_access_unavailable` on migrated accounts, #14)
+- Account connection honors the requested selection timeout instead of giving up after ~5 seconds, and reports the final URL plus a diagnostic screenshot on failure (from #15)
+- Workspace detection accepts `/project/...` paths and localized **New project** buttons on the new origin
+- The agent execution contract now forbids generic browser automation of `flow.google.com` as well as `labs.google`
+
+### Security
+
+- Updated `@modelcontextprotocol/sdk` to 1.32.x, `zod` past the 4.6.6 advisory, and transitive `body-parser`, `fast-uri`, `hono`, `qs`, `ip-address`, `proxy-addr`; `npm audit` reports 0 vulnerabilities
+
+### Added
+
+- Claude Code setup instructions and `examples/claude-code.mcp.json`
+
 ## [0.2.3] - 2026-07-19
 
 ### Fixed
