@@ -1,4 +1,4 @@
-export const FLOW_URL = "https://labs.google/fx/tools/flow";
+export const FLOW_URL = "https://flow.google.com/";
 
 export type MediaType = "video" | "image";
 export type UpscaleFactor = string;

@@ -13,3 +13,7 @@ coverage/
 Thumbs.db
 .idea/
 .vscode/
+
+# Local extension packages and keys
+*.crx
+*.pem
