@@ -37,6 +37,7 @@ async function findBridge() {
 async function googleCookies() {
   const groups = await Promise.all([
     chrome.cookies.getAll({ domain: "google.com" }),
+    chrome.cookies.getAll({ domain: "flow.google.com" }),
     chrome.cookies.getAll({ domain: "labs.google" }),
   ]);
   const unique = new Map();
