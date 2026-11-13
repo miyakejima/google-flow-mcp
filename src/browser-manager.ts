@@ -78,10 +78,13 @@ async function reserveLocalPort(): Promise<number> {
   });
 }
 
-async function waitForCdp(endpoint: string, process: ChildProcess, timeoutMs = 20_000): Promise<void> {
+export async function waitForCdp(endpoint: string, process: Pick<ChildProcess, "exitCode">, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (process.exitCode !== null) {
+    // Exit code 0 is a handoff, not a crash: on Windows an elevated launch makes
+    // Chrome relaunch itself de-elevated (adding --do-not-de-elevate) with the
+    // same arguments, so the relaunched browser still serves CDP on this port.
+    if (process.exitCode !== null && process.exitCode !== 0) {
       throw new Error(`Chromium exited before CDP was ready (exit code ${process.exitCode}).`);
     }
     try {
@@ -96,6 +99,15 @@ async function waitForCdp(endpoint: string, process: ChildProcess, timeoutMs = 2
 }
 
 async function closeManagedBrowser(browser: Browser, process: ChildProcess): Promise<void> {
+  // browser.close() only disconnects a CDP-attached browser, and after a
+  // relaunch handoff the spawned process is already gone, so ask the browser
+  // itself to exit.
+  try {
+    const session = await browser.newBrowserCDPSession();
+    await session.send("Browser.close");
+  } catch {
+    // Already closed or disconnected.
+  }
   await browser.close().catch(() => undefined);
   if (process.exitCode === null && !process.killed) process.kill();
 }
