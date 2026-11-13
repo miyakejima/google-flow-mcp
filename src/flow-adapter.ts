@@ -50,7 +50,9 @@ export const AUTO_APPROVE_RADIO = [
 // video ratios, video outputs.
 export const OPTION_GROUP = '[role="tablist"], [role="radiogroup"]';
 export const OPTION = '[role="tab"], [role="radio"]';
-const RATIO_TEXT = /\b(?:16:9|9:16|1:1|4:3|3:4)\b/;
+// Matched against textContent, which glues the icon name onto the label
+// ("crop_16_916:9"), so no word boundaries.
+const RATIO_TEXT = /\d:\d/;
 const LOGIN_TEXT = /sign in|choose an account|use your google account/i;
 const NEW_PROJECT_TEXT = /new project|create project|start.*project|nuevo proyecto|crear proyecto|新项目|新建项目|创建项目/i;
 const PROJECT_LINK_SELECTOR = 'a[href*="/tools/flow/project/"], a[href^="/project/"], a[href^="https://flow.google.com/project/"]';
@@ -84,6 +86,22 @@ function unique(values: string[]): string[] {
 
 function uniqueNumbers(values: number[]): number[] {
   return [...new Set(values)];
+}
+
+// Escape closes legacy menus, but current Material menus keep focus on their
+// trigger and ignore it; their CDK backdrop must be clicked instead.
+async function dismissMenu(page: Page): Promise<void> {
+  await page.keyboard.press("Escape").catch(() => undefined);
+  // A menu that is still animating open gets its backdrop "-showing" class a
+  // frame later, so match any backdrop and retry until none is left. The open
+  // menu usually covers the backdrop's center, so a real click is intercepted;
+  // CDK closes on the click event itself.
+  const backdrops = page.locator(".cdk-overlay-backdrop");
+  for (let attempt = 0; attempt < 10; attempt += 1) {
+    if (!await backdrops.count().catch(() => 0)) return;
+    await backdrops.last().dispatchEvent("click").catch(() => undefined);
+    await page.waitForTimeout(300);
+  }
 }
 
 async function firstVisible(locators: Locator[]): Promise<Locator | null> {
@@ -289,8 +307,7 @@ export class FlowAdapter {
           ...agentCapabilities.ratios.image,
           ...agentCapabilities.ratios.video,
         ];
-        const back = await lastVisible(page.locator("button").filter({ has: page.locator(ICON, { hasText: /^arrow_back$/ }) }));
-        if (back) await back.click().catch(() => undefined);
+        await this.closeAgentSettings(page).catch(() => undefined);
       } else {
         const settings = await firstVisible([
           page.getByRole("button", { name: /settings|options|generation settings/i }).last(),
@@ -301,14 +318,14 @@ export class FlowAdapter {
           await page.waitForTimeout(250);
         }
         controlText = await visibleText(page.locator('button, [role="button"], [role="option"], [role="menuitem"]'));
-        await page.keyboard.press("Escape").catch(() => undefined);
+        await dismissMenu(page);
       }
 
       const videos = this.mediaLocator(page, "video");
       const upscaleOptions = (await videos.count()) > 0
         ? await this.readVideoDownloadOptions(page, videos.last()).catch(() => [])
         : [];
-      await page.keyboard.press("Escape").catch(() => undefined);
+      await dismissMenu(page);
       const screenshot = this.store.diagnosticPath(`inspect-${account.id}`);
       await page.screenshot({ path: screenshot, fullPage: false });
       return {
@@ -662,7 +679,7 @@ export class FlowAdapter {
       new RegExp(`^${request.outputs}(?:\\s+outputs?)?$`, "i"),
       "output count",
     );
-    await page.keyboard.press("Escape").catch(() => undefined);
+    await dismissMenu(page);
   }
 
   private async enableAgentMode(page: Page): Promise<void> {
@@ -685,11 +702,37 @@ export class FlowAdapter {
     ]);
     if (!tune) return false;
     await tune.click();
-    await page.waitForTimeout(400);
-    if (await this.agentSettingsOpen(page)) return true;
+    if (await this.waitUntil(page, () => this.agentSettingsOpen(page))) return true;
     // settings_2 is the view-options menu in the current UI, not agent settings.
-    await page.keyboard.press("Escape").catch(() => undefined);
+    await dismissMenu(page);
     return false;
+  }
+
+  // The agent panel animates in and out over seconds (slower still when Chrome
+  // throttles a minimized window), so wait on its state, never a fixed delay.
+  private async waitUntil(page: Page, check: () => Promise<boolean>, timeoutMs = 8_000): Promise<boolean> {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      if (await check()) return true;
+      await page.waitForTimeout(200);
+    }
+    return check();
+  }
+
+  private async agentPanelVisible(page: Page): Promise<boolean> {
+    return await this.agentSettingsOpen(page) || Boolean(await firstVisible([page.locator(AUTO_APPROVE_RADIO)]));
+  }
+
+  private async closeAgentSettings(page: Page): Promise<void> {
+    if (!await this.agentPanelVisible(page)) return;
+    // Legacy panel: close icon. Current panel: Back (arrow_back); Escape does not close it.
+    const close = await firstVisible([
+      page.locator("button").filter({ has: page.locator(ICON, { hasText: /^close$/ }) }).last(),
+      page.locator("button").filter({ has: page.locator(ICON, { hasText: /^arrow_back$/ }) }).last(),
+    ]);
+    if (close) await close.click();
+    else await dismissMenu(page);
+    await this.waitUntil(page, async () => !await this.agentPanelVisible(page));
   }
 
   private async readAgentSettings(page: Page, durationHints: number[]): Promise<AgentSettingsCapabilities> {
@@ -716,7 +759,7 @@ export class FlowAdapter {
       const selectedLabel = cleanCapabilityLabel(await dropdown.innerText().catch(() => ""));
       if (!/(?:banana|omni|veo|imagen)/i.test(selectedLabel)) continue;
       await dropdown.click();
-      await page.waitForTimeout(200);
+      await this.waitUntil(page, async () => (await visibleCount(page.locator('[role="menuitem"]'))) > 0, 3_000);
       const labels = await visibleText(page.locator('[role="menuitem"]'));
       const options = labels
         .map(cleanCapabilityLabel)
@@ -727,7 +770,7 @@ export class FlowAdapter {
           selected: normalizeCapabilityId(label) === normalizeCapabilityId(selectedLabel),
         }));
       if (options.length) modelGroups.push(options);
-      await page.keyboard.press("Escape").catch(() => undefined);
+      await dismissMenu(page);
     }
 
     return {
@@ -770,7 +813,7 @@ export class FlowAdapter {
         const target = media === "image" ? await firstVisible([modelButtons.first()]) : await firstVisible([modelButtons.last()]);
         if (!target) throw new FlowError("ui_changed", `Could not find the ${media} model dropdown.`);
         await target.click();
-        await page.waitForTimeout(200);
+        await this.waitUntil(page, async () => (await visibleCount(page.locator('[role="menuitem"]'))) > 0, 3_000);
         const items = page.locator('[role="menuitem"]');
         let choice: Locator | null = null;
         const count = await items.count();
@@ -817,7 +860,10 @@ export class FlowAdapter {
     const save = await lastVisible(page.locator("button"));
     if (!save) throw new FlowError("ui_changed", "Could not find the agent-settings save control.");
     await save.click();
-    await page.waitForTimeout(500);
+    // Generation needs the prompt box back; make sure the panel is gone first.
+    if (!await this.waitUntil(page, async () => !await this.agentPanelVisible(page))) {
+      await this.closeAgentSettings(page);
+    }
   }
 
   private async chooseAgentTab(
@@ -923,7 +969,7 @@ export class FlowAdapter {
   }
 
   private async ensureAgentAutoApprove(page: Page): Promise<void> {
-    await page.keyboard.press("Escape").catch(() => undefined);
+    await dismissMenu(page);
     const openSettings = async (): Promise<Locator> => {
       const alreadyOpen = await firstVisible([page.locator(AUTO_APPROVE_RADIO)]);
       if (alreadyOpen) return alreadyOpen;
@@ -935,23 +981,14 @@ export class FlowAdapter {
         throw new FlowError("ui_changed", "Flow Agent settings could not be opened to disable repeated credit confirmations.");
       }
       await settings.click();
-      await page.waitForTimeout(300);
+      await this.waitUntil(page, async () => Boolean(await firstVisible([page.locator(AUTO_APPROVE_RADIO)])));
       const radio = await firstVisible([page.locator(AUTO_APPROVE_RADIO)]);
       if (!radio) {
         throw new FlowError("ui_changed", "Flow Agent settings did not expose the language-independent AUTO_APPROVE option.");
       }
       return radio;
     };
-    const closeSettings = async (): Promise<void> => {
-      // Legacy panel: close icon. Current panel: Back (arrow_back); Escape does not close it.
-      const close = await firstVisible([
-        page.locator("button").filter({ has: page.locator(ICON, { hasText: /^close$/ }) }).last(),
-        page.locator("button").filter({ has: page.locator(ICON, { hasText: /^arrow_back$/ }) }).last(),
-      ]);
-      if (close) await close.click();
-      else await page.keyboard.press("Escape").catch(() => undefined);
-      await page.waitForTimeout(200);
-    };
+    const closeSettings = (): Promise<void> => this.closeAgentSettings(page);
 
     let autoApprove = await openSettings();
     if (!(await autoApprove.isChecked().catch(() => false))) {
@@ -961,8 +998,7 @@ export class FlowAdapter {
         throw new FlowError("ui_changed", "Flow Agent settings did not expose its Save control.");
       }
       await save.click();
-      await page.waitForTimeout(500);
-      if (await autoApprove.isVisible().catch(() => false)) await closeSettings();
+      if (!await this.waitUntil(page, async () => !await this.agentPanelVisible(page))) await closeSettings();
 
       autoApprove = await openSettings();
       if (!(await autoApprove.isChecked().catch(() => false))) {
@@ -1153,7 +1189,7 @@ export class FlowAdapter {
   }
 
   private async openAssetMenu(page: Page, media: Locator): Promise<void> {
-    await page.keyboard.press("Escape").catch(() => undefined);
+    await dismissMenu(page);
     let surface = media;
     if (!await surface.isVisible().catch(() => false)) {
       const parentButton = media.locator("xpath=ancestor::button[1]");
@@ -1171,7 +1207,7 @@ export class FlowAdapter {
     ]);
     if (menuVisible) return;
 
-    await page.keyboard.press("Escape").catch(() => undefined);
+    await dismissMenu(page);
     await surface.hover();
     const more = await firstVisible([
       surface.locator("xpath=ancestor-or-self::*[position() <= 4]//button").filter({ has: page.locator(SYMBOL_ICON, { hasText: /^more_vert$/ }) }).last(),
