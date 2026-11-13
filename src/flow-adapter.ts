@@ -32,6 +32,25 @@ import {
   type UpscaleFactor,
 } from "./types.js";
 
+// Flow renders Material Symbols as <mat-icon> (current UI) or <i> (legacy UI).
+export const ICON = "i, mat-icon";
+export const SYMBOL_ICON = "i.google-symbols, mat-icon.google-symbols";
+// Agent mode is an opt-in chip in the current prompt box; its settings (tune)
+// and the AUTO_APPROVE preference only exist while it is pressed.
+export const AGENT_MODE_OFF = 'flow-agent-mode-toggle-chip button[aria-pressed="false"]';
+// "Never ask before generating": legacy role radio with value AUTO_APPROVE, or
+// the current Material radio group (value 2 = Never, 1 = Always) identified by
+// its language-independent label id.
+export const AUTO_APPROVE_RADIO = [
+  '[role="radio"][value="AUTO_APPROVE"]',
+  '[aria-labelledby="agent-settings-confirm-policy-label"] input[type="radio"][value="2"]',
+].join(", ");
+// Ratio/output choices: legacy tabs in tablists, current Material button-toggle
+// radios in radiogroups. Groups appear in order: image ratios, image outputs,
+// video ratios, video outputs.
+export const OPTION_GROUP = '[role="tablist"], [role="radiogroup"]';
+export const OPTION = '[role="tab"], [role="radio"]';
+const RATIO_TEXT = /\b(?:16:9|9:16|1:1|4:3|3:4)\b/;
 const LOGIN_TEXT = /sign in|choose an account|use your google account/i;
 const NEW_PROJECT_TEXT = /new project|create project|start.*project|nuevo proyecto|crear proyecto|新项目|新建项目|创建项目/i;
 const PROJECT_LINK_SELECTOR = 'a[href*="/tools/flow/project/"], a[href^="/project/"], a[href^="https://flow.google.com/project/"]';
@@ -270,7 +289,7 @@ export class FlowAdapter {
           ...agentCapabilities.ratios.image,
           ...agentCapabilities.ratios.video,
         ];
-        const back = await lastVisible(page.locator("button").filter({ has: page.locator("i", { hasText: /^arrow_back$/ }) }));
+        const back = await lastVisible(page.locator("button").filter({ has: page.locator(ICON, { hasText: /^arrow_back$/ }) }));
         if (back) await back.click().catch(() => undefined);
       } else {
         const settings = await firstVisible([
@@ -503,7 +522,7 @@ export class FlowAdapter {
     if (await firstVisible([this.promptLocator(page)])) return true;
     if (await page.locator(PROJECT_LINK_SELECTOR).count().catch(() => 0)) return true;
     if (await firstVisible([page.getByRole("button", { name: NEW_PROJECT_TEXT })])) return true;
-    const createControls = page.locator("button").filter({ has: page.locator("i", { hasText: /^add_2$/ }) });
+    const createControls = page.locator("button").filter({ has: page.locator(ICON, { hasText: /^add_2$/ }) });
     return (await createControls.count().catch(() => 0)) > 0;
   }
 
@@ -546,7 +565,7 @@ export class FlowAdapter {
     await Promise.race([
       page.getByRole("button", { name: NEW_PROJECT_TEXT }).last().waitFor({ state: "visible", timeout: 8_000 }),
       page.locator(PROJECT_LINK_SELECTOR).first().waitFor({ state: "visible", timeout: 8_000 }),
-      page.locator("button").filter({ has: page.locator("i", { hasText: /^add_2$/ }) }).last()
+      page.locator("button").filter({ has: page.locator(ICON, { hasText: /^add_2$/ }) }).last()
         .waitFor({ state: "visible", timeout: 8_000 }),
     ]).catch(() => undefined);
 
@@ -572,7 +591,7 @@ export class FlowAdapter {
 
     const create = await firstVisible([
       page.getByRole("button", { name: NEW_PROJECT_TEXT }),
-      page.locator("button").filter({ has: page.locator("i", { hasText: /^add_2$/ }) }).last(),
+      page.locator("button").filter({ has: page.locator(ICON, { hasText: /^add_2$/ }) }).last(),
       page.getByText(/\+\s*new project|new project/i),
     ]);
     if (!create) {
@@ -646,26 +665,42 @@ export class FlowAdapter {
     await page.keyboard.press("Escape").catch(() => undefined);
   }
 
+  private async enableAgentMode(page: Page): Promise<void> {
+    const agentModeOff = await firstVisible([page.locator(AGENT_MODE_OFF)]);
+    if (!agentModeOff) return;
+    await agentModeOff.click();
+    await page.waitForTimeout(400);
+  }
+
+  private async agentSettingsOpen(page: Page): Promise<boolean> {
+    return Boolean(await firstVisible([page.locator(OPTION).filter({ hasText: RATIO_TEXT })]));
+  }
+
   private async openAgentSettings(page: Page): Promise<boolean> {
+    if (await this.agentSettingsOpen(page)) return true;
+    await this.enableAgentMode(page);
     const tune = await firstVisible([
-      page.locator("button").filter({ has: page.locator("i", { hasText: /^tune$/ }) }),
-      page.locator("button").filter({ has: page.locator("i", { hasText: /^settings_2$/ }) }),
+      page.locator("button").filter({ has: page.locator(ICON, { hasText: /^tune$/ }) }),
+      page.locator("button").filter({ has: page.locator(ICON, { hasText: /^settings_2$/ }) }),
     ]);
     if (!tune) return false;
     await tune.click();
     await page.waitForTimeout(400);
-    return (await page.locator('[role="tablist"]').count()) >= 2;
+    if (await this.agentSettingsOpen(page)) return true;
+    // settings_2 is the view-options menu in the current UI, not agent settings.
+    await page.keyboard.press("Escape").catch(() => undefined);
+    return false;
   }
 
   private async readAgentSettings(page: Page, durationHints: number[]): Promise<AgentSettingsCapabilities> {
     const ratioGroups: string[][] = [];
     const outputGroups: number[][] = [];
-    const tablists = page.locator('[role="tablist"]');
+    const tablists = page.locator(OPTION_GROUP);
     const tablistCount = await tablists.count();
     for (let index = 0; index < tablistCount; index += 1) {
       const list = tablists.nth(index);
       if (!(await list.isVisible().catch(() => false))) continue;
-      const labels = await visibleText(list.locator('[role="tab"]'));
+      const labels = await visibleText(list.locator(OPTION));
       const ratios = unique(labels.flatMap((label) => label.match(/\b(?:16:9|9:16|1:1|4:3|3:4)\b/g) ?? []));
       if (ratios.length) ratioGroups.push(ratios);
       const outputs = uniqueNumbers(labels.map(parseOutputCount).filter((value): value is number => value !== undefined));
@@ -794,7 +829,7 @@ export class FlowAdapter {
     choicePredicate: (text: string) => boolean = (text) => cleanCapabilityLabel(text) === requested,
   ): Promise<void> {
     const groups: Locator[] = [];
-    const tablists = page.locator('[role="tablist"]');
+    const tablists = page.locator(OPTION_GROUP);
     const count = await tablists.count();
     for (let index = 0; index < count; index += 1) {
       const list = tablists.nth(index);
@@ -804,7 +839,7 @@ export class FlowAdapter {
     }
     const group = media === "image" ? groups[0] : groups.at(-1);
     if (!group) throw new FlowError("unsupported_option", `Flow did not expose a ${media} ${label} control.`);
-    const tabs = group.locator('[role="tab"]');
+    const tabs = group.locator(OPTION);
     const tabCount = await tabs.count();
     for (let index = 0; index < tabCount; index += 1) {
       const tab = tabs.nth(index);
@@ -890,25 +925,28 @@ export class FlowAdapter {
   private async ensureAgentAutoApprove(page: Page): Promise<void> {
     await page.keyboard.press("Escape").catch(() => undefined);
     const openSettings = async (): Promise<Locator> => {
-      const alreadyOpen = await firstVisible([page.locator('[role="radio"][value="AUTO_APPROVE"]')]);
+      const alreadyOpen = await firstVisible([page.locator(AUTO_APPROVE_RADIO)]);
       if (alreadyOpen) return alreadyOpen;
+      await this.enableAgentMode(page);
       const settings = await firstVisible([
-        page.locator("button").filter({ has: page.locator("i", { hasText: /^tune$/ }) }).last(),
+        page.locator("button").filter({ has: page.locator(ICON, { hasText: /^tune$/ }) }).last(),
       ]);
       if (!settings) {
         throw new FlowError("ui_changed", "Flow Agent settings could not be opened to disable repeated credit confirmations.");
       }
       await settings.click();
       await page.waitForTimeout(300);
-      const radio = await firstVisible([page.locator('[role="radio"][value="AUTO_APPROVE"]')]);
+      const radio = await firstVisible([page.locator(AUTO_APPROVE_RADIO)]);
       if (!radio) {
         throw new FlowError("ui_changed", "Flow Agent settings did not expose the language-independent AUTO_APPROVE option.");
       }
       return radio;
     };
     const closeSettings = async (): Promise<void> => {
+      // Legacy panel: close icon. Current panel: Back (arrow_back); Escape does not close it.
       const close = await firstVisible([
-        page.locator("button").filter({ has: page.locator("i", { hasText: /^close$/ }) }).last(),
+        page.locator("button").filter({ has: page.locator(ICON, { hasText: /^close$/ }) }).last(),
+        page.locator("button").filter({ has: page.locator(ICON, { hasText: /^arrow_back$/ }) }).last(),
       ]);
       if (close) await close.click();
       else await page.keyboard.press("Escape").catch(() => undefined);
@@ -916,9 +954,9 @@ export class FlowAdapter {
     };
 
     let autoApprove = await openSettings();
-    if (await autoApprove.getAttribute("aria-checked") !== "true") {
-      await autoApprove.click();
-      const save = await lastVisible(page.locator("button:not([role])").filter({ hasNot: page.locator("i") }));
+    if (!(await autoApprove.isChecked().catch(() => false))) {
+      await autoApprove.check({ force: true });
+      const save = await lastVisible(page.locator("button:not([role])").filter({ hasNot: page.locator(ICON) }));
       if (!save) {
         throw new FlowError("ui_changed", "Flow Agent settings did not expose its Save control.");
       }
@@ -927,7 +965,7 @@ export class FlowAdapter {
       if (await autoApprove.isVisible().catch(() => false)) await closeSettings();
 
       autoApprove = await openSettings();
-      if (await autoApprove.getAttribute("aria-checked") !== "true") {
+      if (!(await autoApprove.isChecked().catch(() => false))) {
         throw new FlowError("generation_failed", "Flow did not persist its AUTO_APPROVE credit-confirmation setting after Save.");
       }
     }
@@ -936,12 +974,12 @@ export class FlowAdapter {
 
   private async clickGenerate(page: Page, mediaType: MediaType, mediaBaseline: number): Promise<void> {
     const agentUi = Boolean(await firstVisible([
-      page.locator("button").filter({ has: page.locator("i", { hasText: /^tune$/ }) }),
+      page.locator("button").filter({ has: page.locator(ICON, { hasText: /^tune$/ }) }),
     ]));
-    const checkIcons = page.locator("i.google-symbols").filter({ hasText: /^check$/ });
+    const checkIcons = page.locator(SYMBOL_ICON).filter({ hasText: /^check$/ });
     const approvalBaseline = await visibleCount(checkIcons);
     const button = await firstVisible([
-      page.locator("button").filter({ has: page.locator("i", { hasText: /^arrow_forward$/ }) }).last(),
+      page.locator("button").filter({ has: page.locator(ICON, { hasText: /^arrow_forward$/ }) }).last(),
       page.getByRole("button", { name: /^generate(?: image| video)?$/i }).last(),
       page.getByRole("button", { name: /^(?:crear|generar)$/i }).last(),
       page.getByText(/^generate(?: image| video)?$/i),
@@ -976,7 +1014,7 @@ export class FlowAdapter {
     if (dialog) {
       const confirm = await lastVisible(dialog.locator("button"));
       if (confirm && await confirm.isEnabled().catch(() => false)) {
-        const icon = await confirm.locator("i").innerText().catch(() => "");
+        const icon = await confirm.locator(ICON).innerText().catch(() => "");
         if (!/^close$/i.test(icon.trim())) await confirm.click();
       }
     }
@@ -1128,7 +1166,7 @@ export class FlowAdapter {
     await surface.dispatchEvent("contextmenu", { button: 2 });
     await page.waitForTimeout(300);
     const menuVisible = await firstVisible([
-      page.locator('[role="menuitem"]').filter({ has: page.locator("i.google-symbols", { hasText: /^download$/ }) }),
+      page.locator('[role="menuitem"]').filter({ has: page.locator(SYMBOL_ICON, { hasText: /^download$/ }) }),
       page.locator('[role="menu"]'),
     ]);
     if (menuVisible) return;
@@ -1136,7 +1174,7 @@ export class FlowAdapter {
     await page.keyboard.press("Escape").catch(() => undefined);
     await surface.hover();
     const more = await firstVisible([
-      surface.locator("xpath=ancestor-or-self::*[position() <= 4]//button").filter({ has: page.locator("i.google-symbols", { hasText: /^more_vert$/ }) }).last(),
+      surface.locator("xpath=ancestor-or-self::*[position() <= 4]//button").filter({ has: page.locator(SYMBOL_ICON, { hasText: /^more_vert$/ }) }).last(),
       page.getByRole("button", { name: /more|menu|options/i }).last(),
       page.locator('button[aria-label*="more" i], button[aria-label*="menu" i]').last(),
     ]);
@@ -1158,7 +1196,7 @@ export class FlowAdapter {
       .catch(() => 0);
     await this.openAssetMenu(page, media);
     const download = await firstVisible([
-      page.locator('[role="menuitem"]').filter({ has: page.locator("i.google-symbols", { hasText: /^download$/ }) }),
+      page.locator('[role="menuitem"]').filter({ has: page.locator(SYMBOL_ICON, { hasText: /^download$/ }) }),
     ]);
     if (download) {
       if (await download.getAttribute("aria-haspopup")) await download.hover({ force: true });

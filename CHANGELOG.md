@@ -10,6 +10,8 @@ All notable changes to Google Flow MCP are documented here.
 - Account connection honors the requested selection timeout instead of giving up after ~5 seconds, and reports the final URL plus a diagnostic screenshot on failure (from #15)
 - Workspace detection accepts `/project/...` paths and localized **New project** buttons on the new origin
 - The agent execution contract now forbids generic browser automation of `flow.google.com` as well as `labs.google`
+- On Windows, an elevated MCP no longer fails with "Chromium exited before CDP was ready (exit code 0)": Chrome's de-elevation relaunch is treated as a handoff, and managed browsers close via CDP so no orphan blocks later launches
+- Current Flow UI support (fixes `ui_changed` "Flow Agent settings could not be opened", #21): icons render as `<mat-icon>` instead of `<i>`; Agent mode is an opt-in chip that is now enabled before opening its settings; the "Never ask" preference is a Material radio (`value="2"` in `agent-settings-confirm-policy-label`) instead of `value="AUTO_APPROVE"`; ratio/output choices are `role="radio"` toggles in `radiogroup`s instead of tabs; the settings panel closes via Back
 
 ### Security
 
