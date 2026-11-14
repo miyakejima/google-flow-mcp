@@ -137,6 +137,8 @@ export interface UiCapabilities {
   };
   aspectRatiosByMedia?: { image: string[]; video: string[] };
   outputCountsByMedia?: { image: number[]; video: number[] };
+  /** Model each generation tool uses when model is "best" (the default). */
+  bestModels?: { image: string | undefined; video: string | undefined };
   visibleModels: string[];
   visibleAspectRatios: string[];
   visibleDurations: number[];

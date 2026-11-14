@@ -3,7 +3,7 @@ import path from "node:path";
 import type { APIResponse, Download, Locator, Page } from "playwright";
 import { preferredPersistentApprovalIndex } from "./approval.js";
 import { BrowserManager } from "./browser-manager.js";
-import { cleanCapabilityLabel, normalizeCapabilityId, parseDurationSeconds, parseOutputCount, type CapabilityOption } from "./capabilities.js";
+import { capabilityNote, cleanCapabilityLabel, normalizeCapabilityId, parseDurationSeconds, parseOutputCount, pickBestModel, type CapabilityOption } from "./capabilities.js";
 import { CookieBridge } from "./cookie-bridge.js";
 import { FlowError } from "./errors.js";
 import { mediaExtension, probeMedia } from "./media.js";
@@ -339,6 +339,10 @@ export class FlowAdapter {
           models: agentCapabilities.models,
           aspectRatiosByMedia: agentCapabilities.ratios,
           outputCountsByMedia: agentCapabilities.outputs,
+          bestModels: {
+            image: pickBestModel(agentCapabilities.models.image)?.id,
+            video: pickBestModel(agentCapabilities.models.video)?.id,
+          },
         } : {}),
         visibleModels: unique(agentCapabilities
           ? [...agentCapabilities.models.image, ...agentCapabilities.models.video].map((option) => option.label)
@@ -371,7 +375,9 @@ export class FlowAdapter {
         await this.openProject(page, request.flowProject);
         await this.ensureAgentAutoApprove(page);
         await this.store.updateJob(job, "configuring", { creditConfirmationMode: "auto_approve" });
-        await this.configureGeneration(page, request);
+        const resolvedModel = await this.configureGeneration(page, request);
+        // Record the concrete model ("best" resolves per account and changes as Flow's lineup does).
+        if (resolvedModel) await this.store.updateJob(job, "configuring", { model: resolvedModel.id });
         await this.attachReferences(page, request.referenceFiles);
         await this.fillPrompt(
           page,
@@ -633,14 +639,13 @@ export class FlowAdapter {
     return false;
   }
 
-  private async configureGeneration(page: Page, request: GenerationRequest): Promise<void> {
+  private async configureGeneration(page: Page, request: GenerationRequest): Promise<CapabilityOption | undefined> {
     const durationHints = uniqueNumbers((await page.locator("body").innerText().catch(() => ""))
       .split(/\n+/)
       .map((text) => parseDurationSeconds(text))
       .filter((value): value is number => value !== undefined));
     if (await this.openAgentSettings(page)) {
-      await this.configureAgentGeneration(page, request, durationHints);
-      return;
+      return this.configureAgentGeneration(page, request, durationHints);
     }
 
     const settings = await firstVisible([
@@ -654,7 +659,8 @@ export class FlowAdapter {
     await page.waitForTimeout(300);
 
     await this.clickChoice(page, request.mediaType === "video" ? /^video$/i : /^image$/i, "media type");
-    if (request.model && request.model !== "ui-default") {
+    // The legacy settings UI exposes no model list to rank, so "best" keeps Flow's selection there.
+    if (request.model && request.model !== "ui-default" && request.model !== "best") {
       await this.openAndChoose(page, /model/i, new RegExp(this.escapeRegex(request.model), "i"), "model");
     }
     if (request.aspectRatio && request.aspectRatio !== "ui-default") {
@@ -761,14 +767,18 @@ export class FlowAdapter {
       await dropdown.click();
       await this.waitUntil(page, async () => (await visibleCount(page.locator('[role="menuitem"]'))) > 0, 3_000);
       const labels = await visibleText(page.locator('[role="menuitem"]'));
-      const options = labels
-        .map(cleanCapabilityLabel)
-        .filter((label) => /(?:banana|omni|veo|imagen)/i.test(label))
-        .map((label) => ({
-          id: normalizeCapabilityId(label),
-          label,
-          selected: normalizeCapabilityId(label) === normalizeCapabilityId(selectedLabel),
-        }));
+      const options: CapabilityOption[] = labels
+        .filter((raw) => /(?:banana|omni|veo|imagen)/i.test(cleanCapabilityLabel(raw)))
+        .map((raw) => {
+          const label = cleanCapabilityLabel(raw);
+          const note = capabilityNote(raw);
+          return {
+            id: normalizeCapabilityId(label),
+            label,
+            selected: normalizeCapabilityId(label) === normalizeCapabilityId(selectedLabel),
+            ...(note ? { note } : {}),
+          };
+        });
       if (options.length) modelGroups.push(options);
       await dismissMenu(page);
     }
@@ -794,12 +804,14 @@ export class FlowAdapter {
     page: Page,
     request: GenerationRequest,
     durationHints: number[],
-  ): Promise<void> {
+  ): Promise<CapabilityOption | undefined> {
     const capabilities = await this.readAgentSettings(page, durationHints);
     const media = request.mediaType;
     const modelOptions = capabilities.models[media];
-    if (request.model && request.model !== "ui-default") {
-      const requestedId = normalizeCapabilityId(request.model);
+    let resolvedModel: CapabilityOption | undefined = modelOptions.find((option) => option.selected);
+    const wantedModel = request.model === "best" ? pickBestModel(modelOptions)?.id : request.model;
+    if (wantedModel && wantedModel !== "ui-default") {
+      const requestedId = normalizeCapabilityId(wantedModel);
       const requested = modelOptions.find((option) => option.id === requestedId);
       if (!requested) {
         throw new FlowError(
@@ -828,6 +840,7 @@ export class FlowAdapter {
         if (!choice) throw new FlowError("ui_changed", `Flow listed '${requested.label}', but its menu item disappeared.`);
         await choice.click();
       }
+      resolvedModel = requested;
     }
 
     if (request.aspectRatio && request.aspectRatio !== "ui-default") {
@@ -863,7 +876,7 @@ export class FlowAdapter {
     // Generation needs the prompt box back; make sure the panel is gone first.
     if (!await this.waitUntil(page, async () => !await this.agentPanelVisible(page))) {
       await this.closeAgentSettings(page);
-    }
+    }    return resolvedModel;
   }
 
   private async chooseAgentTab(
