@@ -32,18 +32,37 @@ export function cleanCapabilityLabel(value: string): string {
 function modelTier(id: string): number {
   if (/(?:^|-)(?:pro|quality|ultra)(?:-|$)/.test(id)) return 3;
   if (/(?:^|-)lite(?:-|$)/.test(id)) return 0;
-  if (/(?:^|-)fast(?:-|$)/.test(id)) return 1;
+  // "Flash" is Google's speed-optimized tier, equivalent to "Fast".
+  if (/(?:^|-)(?:fast|flash)(?:-|$)/.test(id)) return 1;
   return 2;
 }
 
-function modelVersion(id: string): number {
-  const match = id.match(/(\d+)(?:-(\d+))?/);
-  if (!match) return 0;
-  return Number.parseFloat(`${match[1]}.${match[2] ?? "0"}`);
+// Version as integer parts ("veo-3-10" is 3.10, newer than 3.9), compared part by part.
+function modelVersion(id: string): number[] {
+  return (id.match(/\d+(?:-\d+)*/)?.[0] ?? "").split("-").filter(Boolean).map(Number);
+}
+
+function compareVersions(a: number[], b: number[]): number {
+  for (let index = 0; index < Math.max(a.length, b.length); index += 1) {
+    const difference = (a[index] ?? 0) - (b[index] ?? 0);
+    if (difference) return difference;
+  }
+  return 0;
 }
 
 export function rankModels<T extends Pick<CapabilityOption, "id">>(options: T[]): T[] {
-  return [...options].sort((a, b) => modelTier(b.id) - modelTier(a.id) || modelVersion(b.id) - modelVersion(a.id));
+  return [...options].sort((a, b) =>
+    modelTier(b.id) - modelTier(a.id) || compareVersions(modelVersion(b.id), modelVersion(a.id)));
+}
+
+/** True for the "best" model keyword in any letter case. */
+export function isBestModelKeyword(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === "best";
+}
+
+/** True for the "ui-default" keyword in any letter case. */
+export function isUiDefaultKeyword(value: string | undefined): boolean {
+  return value?.trim().toLowerCase() === "ui-default";
 }
 
 export function pickBestModel<T extends Pick<CapabilityOption, "id">>(options: T[]): T | undefined {

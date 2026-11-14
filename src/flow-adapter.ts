@@ -3,7 +3,7 @@ import path from "node:path";
 import type { APIResponse, Download, Locator, Page } from "playwright";
 import { preferredPersistentApprovalIndex } from "./approval.js";
 import { BrowserManager } from "./browser-manager.js";
-import { capabilityNote, cleanCapabilityLabel, normalizeCapabilityId, parseDurationSeconds, parseOutputCount, pickBestModel, type CapabilityOption } from "./capabilities.js";
+import { capabilityNote, cleanCapabilityLabel, isBestModelKeyword, isUiDefaultKeyword, normalizeCapabilityId, parseDurationSeconds, parseOutputCount, pickBestModel, type CapabilityOption } from "./capabilities.js";
 import { CookieBridge } from "./cookie-bridge.js";
 import { FlowError } from "./errors.js";
 import { mediaExtension, probeMedia } from "./media.js";
@@ -14,7 +14,7 @@ import {
   selectNewMedia,
   type MediaSnapshot,
 } from "./media-selection.js";
-import { canonicalFlowProjectUrl, gotoPage, isFlowPageUrl, originalMediaUrl } from "./navigation.js";
+import { canonicalFlowProjectUrl, gotoPage, isFlowPageUrl, mediaDownloadCandidates } from "./navigation.js";
 import { safeFileStem } from "./paths.js";
 import { FlowStore } from "./store.js";
 import {
@@ -53,6 +53,8 @@ export const OPTION = '[role="tab"], [role="radio"]';
 // Matched against textContent, which glues the icon name onto the label
 // ("crop_16_916:9"), so no word boundaries.
 const RATIO_TEXT = /\d:\d/;
+const IMAGE_MODEL = /banana|imagen/i;
+const VIDEO_MODEL = /veo|omni/i;
 const LOGIN_TEXT = /sign in|choose an account|use your google account/i;
 const NEW_PROJECT_TEXT = /new project|create project|start.*project|nuevo proyecto|crear proyecto|新项目|新建项目|创建项目/i;
 const PROJECT_LINK_SELECTOR = 'a[href*="/tools/flow/project/"], a[href^="/project/"], a[href^="https://flow.google.com/project/"]';
@@ -98,9 +100,16 @@ async function dismissMenu(page: Page): Promise<void> {
   // CDK closes on the click event itself.
   const backdrops = page.locator(".cdk-overlay-backdrop");
   for (let attempt = 0; attempt < 10; attempt += 1) {
-    if (!await backdrops.count().catch(() => 0)) return;
+    if (!await backdrops.count().catch(() => 0)) break;
     await backdrops.last().dispatchEvent("click").catch(() => undefined);
     await page.waitForTimeout(300);
+  }
+  // Context menus (e.g. an asset's Download submenu) have no backdrop; each Escape closes one
+  // nesting level, so keep going while any menu is still visible.
+  const menus = page.locator('[role="menu"]').filter({ visible: true });
+  for (let attempt = 0; attempt < 5 && await menus.count().catch(() => 0); attempt += 1) {
+    await page.keyboard.press("Escape").catch(() => undefined);
+    await page.waitForTimeout(250);
   }
 }
 
@@ -373,6 +382,7 @@ export class FlowAdapter {
         page = await this.readyPage(account.id, true);
         await this.store.updateJob(job, "configuring", { flowProjectUrl: page.url() });
         await this.openProject(page, request.flowProject);
+        await this.resetGalleryTiles(page);
         await this.ensureAgentAutoApprove(page);
         await this.store.updateJob(job, "configuring", { creditConfirmationMode: "auto_approve" });
         const resolvedModel = await this.configureGeneration(page, request);
@@ -425,6 +435,7 @@ export class FlowAdapter {
     if (["completed", "failed", "needs_attention"].includes(job.status)) return job;
     return this.browsers.runExclusive(job.accountId, async () => {
       const page = await this.readyPage(job.accountId, true, job.flowProjectUrl);
+      await this.resetGalleryTiles(page);
       if (job.status === "ready" && job.generatedAssets?.length) {
         return await this.finalizeReadyJob(page, job, timeoutSeconds);
       }
@@ -453,6 +464,7 @@ export class FlowAdapter {
     if (job.mediaType !== "video") throw new FlowError("validation_error", "Only video jobs can be upscaled.");
     return this.browsers.runExclusive(job.accountId, async () => {
       const page = await this.readyPage(job.accountId, true, job.flowProjectUrl);
+      await this.resetGalleryTiles(page);
       await this.store.updateJob(job, "upscaling", { upscale: factor });
       const ready = await this.upscaleLatest(page, job, factor, timeoutSeconds);
       if (ready && job.status !== "completed") await this.store.updateJob(job, "ready");
@@ -464,6 +476,7 @@ export class FlowAdapter {
     const job = await this.store.getJob(jobId);
     return this.browsers.runExclusive(job.accountId, async () => {
       const page = await this.readyPage(job.accountId, true, job.flowProjectUrl);
+      await this.resetGalleryTiles(page);
       await this.store.updateJob(job, "downloading");
       await this.downloadTracked(page, job);
       return job;
@@ -542,7 +555,7 @@ export class FlowAdapter {
   private async hasWorkspace(page: Page): Promise<boolean> {
     if (!isFlowPageUrl(page.url())) return false;
     if (/\/(?:tools\/flow\/)?project\/[^/]+/i.test(new URL(page.url()).pathname)) return true;
-    if (await firstVisible([this.promptLocator(page)])) return true;
+    if (await firstVisible(this.promptLocators(page))) return true;
     if (await page.locator(PROJECT_LINK_SELECTOR).count().catch(() => 0)) return true;
     if (await firstVisible([page.getByRole("button", { name: NEW_PROJECT_TEXT })])) return true;
     const createControls = page.locator("button").filter({ has: page.locator(ICON, { hasText: /^add_2$/ }) });
@@ -558,7 +571,7 @@ export class FlowAdapter {
     if (signIn) return false;
     const body = (await page.locator("body").innerText().catch(() => "")).slice(0, 8_000);
     if (LOGIN_TEXT.test(body)) return false;
-    if (await firstVisible([this.promptLocator(page)])) return true;
+    if (await firstVisible(this.promptLocators(page))) return true;
     const accountControl = await firstVisible([
       page.locator('button[aria-label*="Google Account" i], a[aria-label*="Google Account" i]'),
       page.locator('img[alt*="profile" i], img[alt*="account" i]'),
@@ -567,14 +580,18 @@ export class FlowAdapter {
     return Boolean(accountControl);
   }
 
-  private promptLocator(page: Page): Locator {
-    return page.locator([
-      'textarea[placeholder*="prompt" i]',
-      'textarea[placeholder*="describe" i]',
-      '[contenteditable="true"]',
-      '[contenteditable="plaintext-only"]',
-      "textarea",
-    ].join(", "));
+  // Ordered most to least specific: a comma-joined selector would match in DOM order and
+  // could pick an unrelated editable element (e.g. a project title) before the prompt box.
+  private promptLocators(page: Page): Locator[] {
+    return [
+      page.locator('textarea[placeholder*="prompt" i]'),
+      page.locator('textarea[placeholder*="describe" i]'),
+      page.locator('[contenteditable="true"][role="textbox"]'),
+      page.locator('[contenteditable="true"][data-placeholder*="create" i], [contenteditable="true"][aria-label*="prompt" i]'),
+      page.locator('[contenteditable="true"]'),
+      page.locator('[contenteditable="plaintext-only"]'),
+      page.locator("textarea"),
+    ];
   }
 
   private async openProject(page: Page, projectName?: string): Promise<void> {
@@ -583,7 +600,7 @@ export class FlowAdapter {
       await gotoPage(page, projectWorkspaceUrl);
       await page.waitForTimeout(1_000);
     }
-    if (await firstVisible([this.promptLocator(page)])) return;
+    if (await firstVisible(this.promptLocators(page))) return;
 
     await Promise.race([
       page.getByRole("button", { name: NEW_PROJECT_TEXT }).last().waitFor({ state: "visible", timeout: 8_000 }),
@@ -633,7 +650,7 @@ export class FlowAdapter {
   private async waitForPrompt(page: Page, timeoutMs = 30_000): Promise<boolean> {
     const deadline = Date.now() + timeoutMs;
     while (Date.now() < deadline) {
-      if (await firstVisible([this.promptLocator(page)])) return true;
+      if (await firstVisible(this.promptLocators(page))) return true;
       await page.waitForTimeout(500);
     }
     return false;
@@ -660,7 +677,7 @@ export class FlowAdapter {
 
     await this.clickChoice(page, request.mediaType === "video" ? /^video$/i : /^image$/i, "media type");
     // The legacy settings UI exposes no model list to rank, so "best" keeps Flow's selection there.
-    if (request.model && request.model !== "ui-default" && request.model !== "best") {
+    if (request.model && !isUiDefaultKeyword(request.model) && !isBestModelKeyword(request.model)) {
       await this.openAndChoose(page, /model/i, new RegExp(this.escapeRegex(request.model), "i"), "model");
     }
     if (request.aspectRatio && request.aspectRatio !== "ui-default") {
@@ -692,7 +709,10 @@ export class FlowAdapter {
     const agentModeOff = await firstVisible([page.locator(AGENT_MODE_OFF)]);
     if (!agentModeOff) return;
     await agentModeOff.click();
-    await page.waitForTimeout(400);
+    // The chip animates; tune (Agent settings) only renders once it is pressed.
+    await this.waitUntil(page, async () =>
+      !await firstVisible([page.locator(AGENT_MODE_OFF)])
+      && Boolean(await firstVisible([page.locator("button").filter({ has: page.locator(ICON, { hasText: /^tune$/ }) })])));
   }
 
   private async agentSettingsOpen(page: Page): Promise<boolean> {
@@ -784,9 +804,11 @@ export class FlowAdapter {
     }
 
     return {
+      // Classify by model family rather than position, so a single visible dropdown can
+      // never make an image model the "best" video model (or vice versa).
       models: {
-        image: modelGroups[0] ?? [],
-        video: modelGroups.at(-1) ?? [],
+        image: modelGroups.find((group) => group.some((option) => IMAGE_MODEL.test(option.id))) ?? [],
+        video: modelGroups.find((group) => group.some((option) => VIDEO_MODEL.test(option.id))) ?? [],
       },
       ratios: {
         image: ratioGroups[0] ?? [],
@@ -809,8 +831,8 @@ export class FlowAdapter {
     const media = request.mediaType;
     const modelOptions = capabilities.models[media];
     let resolvedModel: CapabilityOption | undefined = modelOptions.find((option) => option.selected);
-    const wantedModel = request.model === "best" ? pickBestModel(modelOptions)?.id : request.model;
-    if (wantedModel && wantedModel !== "ui-default") {
+    const wantedModel = isBestModelKeyword(request.model) ? pickBestModel(modelOptions)?.id : request.model;
+    if (wantedModel && !isUiDefaultKeyword(wantedModel)) {
       const requestedId = normalizeCapabilityId(wantedModel);
       const requested = modelOptions.find((option) => option.id === requestedId);
       if (!requested) {
@@ -821,8 +843,8 @@ export class FlowAdapter {
         );
       }
       if (!requested.selected) {
-        const modelButtons = page.locator('button[aria-haspopup="menu"]').filter({ hasText: /banana|omni|veo|imagen/i });
-        const target = media === "image" ? await firstVisible([modelButtons.first()]) : await firstVisible([modelButtons.last()]);
+        const modelButtons = page.locator('button[aria-haspopup="menu"]').filter({ hasText: media === "image" ? IMAGE_MODEL : VIDEO_MODEL });
+        const target = await firstVisible([modelButtons]);
         if (!target) throw new FlowError("ui_changed", `Could not find the ${media} model dropdown.`);
         await target.click();
         await this.waitUntil(page, async () => (await visibleCount(page.locator('[role="menuitem"]'))) > 0, 3_000);
@@ -839,6 +861,13 @@ export class FlowAdapter {
         }
         if (!choice) throw new FlowError("ui_changed", `Flow listed '${requested.label}', but its menu item disappeared.`);
         await choice.click();
+        await dismissMenu(page);
+        // Confirm Flow applied it: the dropdown shows the selected model's label.
+        const applied = await this.waitUntil(page, async () =>
+          normalizeCapabilityId(await target.innerText().catch(() => "")) === requestedId, 5_000);
+        if (!applied) {
+          throw new FlowError("ui_changed", `Selected '${requested.label}', but Flow's ${media} model dropdown did not change to it.`);
+        }
       }
       resolvedModel = requested;
     }
@@ -870,7 +899,9 @@ export class FlowAdapter {
       }
     }
 
-    const save = await lastVisible(page.locator("button"));
+    // Save is the panel's only plain text button (no role, no icon); never "the last button on
+    // the page", which can be a gallery tile and would open the asset editor instead.
+    const save = await lastVisible(page.locator("button:not([role])").filter({ hasNot: page.locator(ICON) }));
     if (!save) throw new FlowError("ui_changed", "Could not find the agent-settings save control.");
     await save.click();
     // Generation needs the prompt box back; make sure the panel is gone first.
@@ -970,7 +1001,7 @@ export class FlowAdapter {
   }
 
   private async fillPrompt(page: Page, prompt: string): Promise<void> {
-    const editor = await firstVisible([this.promptLocator(page)]);
+    const editor = await firstVisible(this.promptLocators(page));
     if (!editor) throw new FlowError("ui_changed", "Could not locate Flow's prompt editor.");
     const tag = await editor.evaluate((element) => element.tagName.toLowerCase());
     if (tag === "textarea" || tag === "input") await editor.fill(prompt);
@@ -1025,7 +1056,11 @@ export class FlowAdapter {
     const agentUi = Boolean(await firstVisible([
       page.locator("button").filter({ has: page.locator(ICON, { hasText: /^tune$/ }) }),
     ]));
-    const checkIcons = page.locator(SYMBOL_ICON).filter({ hasText: /^check$/ });
+    // Approval actions are plain buttons with a check icon; exclude toggles/radios/checkboxes,
+    // whose selected-state checkmarks must never be mistaken for a credit approval.
+    const checkIcons = page
+      .locator('button:not([role="radio"]):not([role="checkbox"]):not([role="option"]):not([aria-pressed])')
+      .filter({ has: page.locator(SYMBOL_ICON, { hasText: /^check$/ }) });
     const approvalBaseline = await visibleCount(checkIcons);
     const button = await firstVisible([
       page.locator("button").filter({ has: page.locator(ICON, { hasText: /^arrow_forward$/ }) }).last(),
@@ -1045,10 +1080,9 @@ export class FlowAdapter {
         const checks = await visibleCount(checkIcons);
         const preferredApproval = preferredPersistentApprovalIndex(approvalBaseline, checks);
         if (preferredApproval !== null) {
-          const persistentCheck = await lastVisible(checkIcons);
-          if (!persistentCheck) continue;
-          const approve = persistentCheck.locator("xpath=ancestor::button[1]");
-          await approve.click();
+          const approve = await lastVisible(checkIcons);
+          if (!approve) continue;
+          await approve.click({ timeout: 10_000 });
           await page.waitForTimeout(500);
           return;
         }
@@ -1069,14 +1103,26 @@ export class FlowAdapter {
     }
   }
 
+  // A hovered video tile swaps its thumbnail <img> for a <video> player whose URL token differs
+  // and stays swapped, which would change that asset's identity between snapshots. Reload to
+  // restore plain thumbnails before any snapshot that identities depend on (cheap no-op if none).
+  private async resetGalleryTiles(page: Page): Promise<void> {
+    if (!await page.locator("flow-video-tile video").count().catch(() => 0)) return;
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await this.waitForPrompt(page, 30_000);
+    await this.waitUntil(page, async () => !await page.locator("flow-video-tile video").count().catch(() => 0), 10_000);
+  }
+
   private mediaLocator(page: Page, type: MediaType): Locator {
-    if (type === "video") return page.locator("video");
-    // Current Flow serves gallery tiles from flow.google.com/asb/... with a
-    // data-media-id; legacy Flow used blob:/googleusercontent/ggpht URLs. The
-    // Google account avatar (googleusercontent.com/ogw/) is never media.
+    // Current Flow renders each video as a <flow-video-tile> showing a thumbnail <img>; a
+    // <video> only exists while a tile is hovered. Legacy Flow rendered <video> elements.
+    if (type === "video") return page.locator("flow-video-tile img, video:not(flow-video-tile video)");
+    // Current Flow: <flow-image-tile> images from flow.google.com/asb/... with a data-media-id.
+    // Video thumbnails are /asb/ images too, so never match /asb/ by URL alone. Legacy Flow
+    // used blob:/googleusercontent/ggpht URLs; the account avatar (/ogw/) is never media.
     return page.locator([
+      "flow-image-tile img",
       "img[data-media-id]",
-      'img[src*="/asb/"]',
       'img[src^="blob:"]',
       'img[src*="googleusercontent"]:not([src*="/ogw/"])',
       'img[src*="ggpht"]',
@@ -1382,7 +1428,15 @@ export class FlowAdapter {
           contentType = captured.contentType.toLowerCase();
           body = Buffer.from(captured.base64, "base64");
         } else {
-          response = await page.context().request.get(originalMediaUrl(targetSnapshot.sourceUrl), { timeout: 120_000 });
+          // Tracked URLs are gallery thumbnails; request the best real file first (image original,
+          // or the video's MP4 renditions), falling back down the list to the tracked URL itself.
+          let fetched: APIResponse | undefined;
+          for (const candidate of mediaDownloadCandidates(targetSnapshot.sourceUrl, job.mediaType)) {
+            fetched = await page.context().request.get(candidate, { timeout: 120_000 });
+            const type = fetched.headers()["content-type"]?.toLowerCase() ?? "";
+            if (fetched.ok() && type.startsWith(`${job.mediaType}/`)) break;
+          }
+          response = fetched!;
           contentType = response.headers()["content-type"]?.toLowerCase() ?? "";
           if (!response.ok()) {
             throw new FlowError("download_failed", `Flow returned HTTP ${response.status()} for the tracked asset.`);

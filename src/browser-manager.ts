@@ -95,6 +95,14 @@ export async function waitForCdp(endpoint: string, process: Pick<ChildProcess, "
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  if (process.exitCode === 0) {
+    // The launcher handed off but nothing serves our port: Chrome forwarded the launch to a
+    // browser that already owns this profile (e.g. a leftover window) instead of relaunching.
+    throw new Error(
+      `Chromium handed the launch off but never exposed CDP at ${endpoint} within ${timeoutMs / 1_000} seconds. `
+      + "Another Chrome window is probably still using this Flow profile; close it and retry.",
+    );
+  }
   throw new Error(`Chromium did not expose CDP at ${endpoint} within ${timeoutMs / 1_000} seconds.`);
 }
 

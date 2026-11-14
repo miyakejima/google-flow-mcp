@@ -293,7 +293,7 @@ server.registerTool(
         download: input.download,
         timeoutSeconds: input.timeoutSeconds,
         ...(input.flowProject ? { flowProject: input.flowProject } : {}),
-        ...(input.model !== "ui-default" ? { model: input.model } : {}),
+        ...(input.model.trim().toLowerCase() !== "ui-default" ? { model: input.model } : {}),
         ...(input.aspectRatio !== "ui-default" ? { aspectRatio: input.aspectRatio } : {}),
         ...(input.durationSeconds ? { durationSeconds: input.durationSeconds } : {}),
         ...(input.fileName ? { fileName: input.fileName } : {}),
@@ -340,7 +340,7 @@ server.registerTool(
         download: input.download,
         timeoutSeconds: input.timeoutSeconds,
         ...(input.flowProject ? { flowProject: input.flowProject } : {}),
-        ...(input.model !== "ui-default" ? { model: input.model } : {}),
+        ...(input.model.trim().toLowerCase() !== "ui-default" ? { model: input.model } : {}),
         ...(input.aspectRatio !== "ui-default" ? { aspectRatio: input.aspectRatio } : {}),
         ...(input.fileName ? { fileName: input.fileName } : {}),
       };

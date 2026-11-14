@@ -22,6 +22,10 @@ export function upscaleHeight(id: string): number | undefined {
   return match?.[1] ? Number.parseInt(match[1], 10) : undefined;
 }
 
+const UPSCALED_LABEL = /\bupscal|mejorad|escalad/i;
+const ORIGINAL_LABEL = /\boriginal\b/i;
+const PREVIEW_LABEL = /\bgif\b|animated|animad/i;
+
 export function extractUpscaleOptions(
   entries: AssetMenuEntry[],
   originalHeight?: number,
@@ -33,11 +37,18 @@ export function extractUpscaleOptions(
     if (!/^(?:1x|2x|4x|\d{3,4}p|[48]k)$/.test(id) || seen.has(id)) continue;
     const height = upscaleHeight(id);
     const factor = id.match(/^(\d)x$/)?.[1];
+    // Current Flow labels state the kind ("720p Original size", "1080p Upscaled",
+    // "270p Animated GIF"); prefer that, then fall back to factor/height comparison.
+    const labelKind = UPSCALED_LABEL.test(entry.text) ? "upscale" as const
+      : ORIGINAL_LABEL.test(entry.text) ? "original" as const
+        : PREVIEW_LABEL.test(entry.text) ? "preview" as const
+          : undefined;
+    // A factor ("Upscale 1x"/"2x") is authoritative; "Upscale" there is only the menu prefix.
     const kind = factor
       ? Number.parseInt(factor, 10) <= 1 ? "original" as const : "upscale" as const
-      : originalHeight && height
+      : labelKind ?? (originalHeight && height
         ? height < originalHeight ? "preview" as const : height === originalHeight ? "original" as const : "upscale" as const
-        : "unknown" as const;
+        : "unknown" as const);
     seen.add(id);
     options.push({
       id,

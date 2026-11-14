@@ -30,6 +30,6 @@ test("a crashing launcher still fails fast", async (context) => {
 test("a handoff with no browser behind it times out", async () => {
   await assert.rejects(
     waitForCdp("http://127.0.0.1:1", { exitCode: 0 }, 1_000),
-    /did not expose CDP/,
+    /never exposed CDP.*another Chrome window/is,
   );
 });
