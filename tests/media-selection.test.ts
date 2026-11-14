@@ -54,3 +54,10 @@ test("an older tile that loads late below known media is never mistaken for a ne
   // An empty project has nothing known, so any tile is new.
   assert.deepEqual(selectNewMedia([ready(0, "url:x")], []), [ready(0, "url:x")]);
 });
+
+test("identities recorded with a player URL still match the tile's thumbnail", () => {
+  const recorded = [{ keys: ["url:https://flow.google.com/asb/TOKEN123=mm,22,15"] }];
+  const thumbnail = ready(0, "url:https://flow.google.com/asb/TOKEN123", "asb:TOKEN123");
+  assert.deepEqual(resolveMediaIdentities([thumbnail], recorded), [thumbnail]);
+  assert.deepEqual(selectNewMedia([thumbnail], ["url:https://flow.google.com/asb/TOKEN123=mm,22,15"]), []);
+});
