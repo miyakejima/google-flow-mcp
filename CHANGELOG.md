@@ -18,6 +18,15 @@ All notable changes to Google Flow MCP are documented here.
 - Headless Chrome launches at 1440x900; at its ~750px default Flow hides the Agent toggle and settings, so capability inspection silently fell back to the legacy reader
 - Generated images are detected again (gallery tiles are `flow.google.com/asb/...` with `data-media-id`; the account avatar is no longer mistaken for media), fixing "did not expose a credit confirmation or begin generation" timeouts after successful generations
 - Downloads request the full-resolution original (`=d`) instead of the 512px WebP gallery thumbnail
+- Videos are detected again (current Flow shows `<flow-video-tile>` thumbnails, not `<video>` elements) and download as the real 720p MP4 (`=m22`, then `=m18`); image detection no longer matches video thumbnails
+- Media identity is stable: `/asb/` assets are also keyed by token, so a hovered video tile (thumbnail swapped for a player) is not mistaken for new output, and older job records still resolve
+- New outputs must precede every previously known tile (Flow inserts at the top); the baseline waits for a fully loaded, stable gallery. Previously a lazy-loaded older video could be returned as a new generation
+- Upscale options are classified from Flow's labels ("1080p Upscaled", "720p Original size"), so `availableUpscales` is populated; nested asset menus are fully closed
+- Robustness from review: Agent toggle/model menus waited on rather than fixed delays; Save scoped to the panel's text button; the selected model is verified after switching; model groups classified by family; credit-approval detection limited to real approval buttons; clear error when Chrome hands off to a browser already using the profile
+
+### Added
+
+- Generation tools default to `model: "best"` (highest-quality available model, re-evaluated live); `flow_inspect_account` reports `bestModels`; retirement badges are exposed as `note`
 
 ### Security
 

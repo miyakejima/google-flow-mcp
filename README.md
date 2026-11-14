@@ -337,6 +337,14 @@ The MCP never invents `4x`, silently downgrades a request, or substitutes an unr
 
 Every tool includes MCP-visible parameter descriptions so the agent knows how to use the live IDs returned by `flow_inspect_account`.
 
+### Default model: `best`
+
+When no model is given, both generation tools use `best`: the highest-quality model the account offers right now, ranked by tier (Pro/Quality/Ultra > standard > Fast/Flash > Lite) and then version. `flow_inspect_account` reports the current choice in `bestModels` (for example `nano-banana-pro` for images and `veo-3-1-quality` for video). Because the ranking reads the live model list, a newer release wins automatically and a retired model simply drops out. Higher tiers usually cost more credits; pass an explicit model ID (such as `veo-3-1-lite`) for cheaper drafts, or `ui-default` to keep whatever Flow currently has selected. Flow's retirement badges ("Leaving Dec 5") are reported as a model `note`, not as part of its ID.
+
+### Downloads
+
+Downloads fetch the real file rather than the gallery thumbnail: the full-resolution original for images, the 720p H.264+AAC MP4 for videos (falling back to 360p), and the upscaled file Flow delivers for `flow_upscale_video` (for example 1080p), saved alongside the original with an `-1080p` suffix.
+
 ### If an agent opens or scrolls the public Flow website
 
 That behavior is not a Flow MCP generation. Check the agent's tool trace: it must contain `flow_generate_video` or `flow_generate_image` and the response must contain a job ID. Version 0.2.0 adds a deterministic installer and non-blocking account onboarding in addition to the browser-fallback guard. Refresh or restart the MCP client after upgrading so it reloads the current server instructions and tool schemas.
