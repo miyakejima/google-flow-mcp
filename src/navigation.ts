@@ -13,6 +13,22 @@ export async function gotoPage(page: Navigable, url: string): Promise<void> {
   }
 }
 
+// Gallery tiles load Flow media as sized thumbnails (e.g. ".../asb/<id>=s512-rw",
+// a 512px WebP). The "=d" suffix serves the full-resolution original (verified:
+// 1024x1024 JPEG for a 1:1 Nano Banana image), so downloads must request it.
+export function originalMediaUrl(rawUrl: string): string {
+  try {
+    const url = new URL(rawUrl);
+    if (url.hostname !== "flow.google.com" || !url.pathname.startsWith("/asb/")) return rawUrl;
+    const [, id = ""] = url.pathname.match(/^\/asb\/([^=]+)/) ?? [];
+    if (!id) return rawUrl;
+    url.pathname = `/asb/${id}=d`;
+    return url.href;
+  } catch {
+    return rawUrl;
+  }
+}
+
 export function isFlowPageUrl(rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl);

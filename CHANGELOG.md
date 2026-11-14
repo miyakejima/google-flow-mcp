@@ -13,6 +13,12 @@ All notable changes to Google Flow MCP are documented here.
 - On Windows, an elevated MCP no longer fails with "Chromium exited before CDP was ready (exit code 0)": Chrome's de-elevation relaunch is treated as a handoff, and managed browsers close via CDP so no orphan blocks later launches
 - Current Flow UI support (fixes `ui_changed` "Flow Agent settings could not be opened", #21): icons render as `<mat-icon>` instead of `<i>`; Agent mode is an opt-in chip that is now enabled before opening its settings; the "Never ask" preference is a Material radio (`value="2"` in `agent-settings-confirm-policy-label`) instead of `value="AUTO_APPROVE"`; ratio/output choices are `role="radio"` toggles in `radiogroup`s instead of tabs; the settings panel closes via Back
 
+- Agent settings panel and model menus animate over seconds; open/close/read now wait on actual state (up to 8s) instead of fixed 0.3-0.4s delays, and Material menus that ignore Escape are dismissed via their backdrop
+- Navigating to the legacy Flow URL no longer fails with "interrupted by another navigation" when Google redirects it to `flow.google.com`
+- Headless Chrome launches at 1440x900; at its ~750px default Flow hides the Agent toggle and settings, so capability inspection silently fell back to the legacy reader
+- Generated images are detected again (gallery tiles are `flow.google.com/asb/...` with `data-media-id`; the account avatar is no longer mistaken for media), fixing "did not expose a credit confirmation or begin generation" timeouts after successful generations
+- Downloads request the full-resolution original (`=d`) instead of the 512px WebP gallery thumbnail
+
 ### Security
 
 - Updated `@modelcontextprotocol/sdk` to 1.32.x, `zod` past the 4.6.6 advisory, and transitive `body-parser`, `fast-uri`, `hono`, `qs`, `ip-address`, `proxy-addr`; `npm audit` reports 0 vulnerabilities

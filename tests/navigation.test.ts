@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { canonicalFlowProjectUrl, gotoPage, isFlowPageUrl } from "../src/navigation.js";
+import { canonicalFlowProjectUrl, gotoPage, isFlowPageUrl, originalMediaUrl } from "../src/navigation.js";
 
 function fakePage(gotoError?: Error) {
   const calls: string[] = [];
@@ -54,4 +54,20 @@ test("asset editor URLs return to their language-preserving project workspace", 
     canonicalFlowProjectUrl("https://labs.google/fx/tools/flow/project/project-1"),
     "https://labs.google/fx/tools/flow/project/project-1",
   );
+});
+
+test("Flow media downloads request the full-resolution original, not the gallery thumbnail", () => {
+  assert.equal(
+    originalMediaUrl("https://flow.google.com/asb/ANqvLObHCQ_abc-123=s512-rw"),
+    "https://flow.google.com/asb/ANqvLObHCQ_abc-123=d",
+  );
+  assert.equal(originalMediaUrl("https://flow.google.com/asb/ANqvLObHCQ"), "https://flow.google.com/asb/ANqvLObHCQ=d");
+  for (const untouched of [
+    "blob:https://flow.google.com/1234",
+    "https://lh3.googleusercontent.com/some/legacy=s512",
+    "https://flow.google.com.evil.example/asb/x=s512",
+    "not a url",
+  ]) {
+    assert.equal(originalMediaUrl(untouched), untouched);
+  }
 });

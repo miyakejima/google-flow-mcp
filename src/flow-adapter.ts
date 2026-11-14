@@ -14,7 +14,7 @@ import {
   selectNewMedia,
   type MediaSnapshot,
 } from "./media-selection.js";
-import { canonicalFlowProjectUrl, gotoPage, isFlowPageUrl } from "./navigation.js";
+import { canonicalFlowProjectUrl, gotoPage, isFlowPageUrl, originalMediaUrl } from "./navigation.js";
 import { safeFileStem } from "./paths.js";
 import { FlowStore } from "./store.js";
 import {
@@ -1369,7 +1369,7 @@ export class FlowAdapter {
           contentType = captured.contentType.toLowerCase();
           body = Buffer.from(captured.base64, "base64");
         } else {
-          response = await page.context().request.get(targetSnapshot.sourceUrl, { timeout: 120_000 });
+          response = await page.context().request.get(originalMediaUrl(targetSnapshot.sourceUrl), { timeout: 120_000 });
           contentType = response.headers()["content-type"]?.toLowerCase() ?? "";
           if (!response.ok()) {
             throw new FlowError("download_failed", `Flow returned HTTP ${response.status()} for the tracked asset.`);
