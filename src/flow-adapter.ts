@@ -1058,7 +1058,16 @@ export class FlowAdapter {
 
   private mediaLocator(page: Page, type: MediaType): Locator {
     if (type === "video") return page.locator("video");
-    return page.locator('img[src^="blob:"], img[src*="googleusercontent"], img[src*="ggpht"]');
+    // Current Flow serves gallery tiles from flow.google.com/asb/... with a
+    // data-media-id; legacy Flow used blob:/googleusercontent/ggpht URLs. The
+    // Google account avatar (googleusercontent.com/ogw/) is never media.
+    return page.locator([
+      "img[data-media-id]",
+      'img[src*="/asb/"]',
+      'img[src^="blob:"]',
+      'img[src*="googleusercontent"]:not([src*="/ogw/"])',
+      'img[src*="ggpht"]',
+    ].join(", "));
   }
 
   private async mediaSnapshots(page: Page, type: MediaType): Promise<MediaSnapshot[]> {
