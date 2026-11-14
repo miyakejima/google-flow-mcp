@@ -382,7 +382,6 @@ export class FlowAdapter {
         page = await this.readyPage(account.id, true);
         await this.store.updateJob(job, "configuring", { flowProjectUrl: page.url() });
         await this.openProject(page, request.flowProject);
-        await this.resetGalleryTiles(page);
         await this.ensureAgentAutoApprove(page);
         await this.store.updateJob(job, "configuring", { creditConfirmationMode: "auto_approve" });
         const resolvedModel = await this.configureGeneration(page, request);
@@ -435,7 +434,6 @@ export class FlowAdapter {
     if (["completed", "failed", "needs_attention"].includes(job.status)) return job;
     return this.browsers.runExclusive(job.accountId, async () => {
       const page = await this.readyPage(job.accountId, true, job.flowProjectUrl);
-      await this.resetGalleryTiles(page);
       if (job.status === "ready" && job.generatedAssets?.length) {
         return await this.finalizeReadyJob(page, job, timeoutSeconds);
       }
@@ -464,7 +462,6 @@ export class FlowAdapter {
     if (job.mediaType !== "video") throw new FlowError("validation_error", "Only video jobs can be upscaled.");
     return this.browsers.runExclusive(job.accountId, async () => {
       const page = await this.readyPage(job.accountId, true, job.flowProjectUrl);
-      await this.resetGalleryTiles(page);
       await this.store.updateJob(job, "upscaling", { upscale: factor });
       const ready = await this.upscaleLatest(page, job, factor, timeoutSeconds);
       if (ready && job.status !== "completed") await this.store.updateJob(job, "ready");
@@ -476,7 +473,6 @@ export class FlowAdapter {
     const job = await this.store.getJob(jobId);
     return this.browsers.runExclusive(job.accountId, async () => {
       const page = await this.readyPage(job.accountId, true, job.flowProjectUrl);
-      await this.resetGalleryTiles(page);
       await this.store.updateJob(job, "downloading");
       await this.downloadTracked(page, job);
       return job;
@@ -1103,20 +1099,11 @@ export class FlowAdapter {
     }
   }
 
-  // A hovered video tile swaps its thumbnail <img> for a <video> player whose URL token differs
-  // and stays swapped, which would change that asset's identity between snapshots. Reload to
-  // restore plain thumbnails before any snapshot that identities depend on (cheap no-op if none).
-  private async resetGalleryTiles(page: Page): Promise<void> {
-    if (!await page.locator("flow-video-tile video").count().catch(() => 0)) return;
-    await page.reload({ waitUntil: "domcontentloaded" });
-    await this.waitForPrompt(page, 30_000);
-    await this.waitUntil(page, async () => !await page.locator("flow-video-tile video").count().catch(() => 0), 10_000);
-  }
-
   private mediaLocator(page: Page, type: MediaType): Locator {
-    // Current Flow renders each video as a <flow-video-tile> showing a thumbnail <img>; a
-    // <video> only exists while a tile is hovered. Legacy Flow rendered <video> elements.
-    if (type === "video") return page.locator("flow-video-tile img, video:not(flow-video-tile video)");
+    // Current Flow renders each video as a <flow-video-tile> showing a thumbnail <img>, swapped
+    // for a <video> player once hovered (one element per tile either way; both carry the same
+    // asb token identity). Legacy Flow rendered bare <video> elements.
+    if (type === "video") return page.locator("flow-video-tile img, flow-video-tile video, video:not(flow-video-tile video)");
     // Current Flow: <flow-image-tile> images from flow.google.com/asb/... with a data-media-id.
     // Video thumbnails are /asb/ images too, so never match /asb/ by URL alone. Legacy Flow
     // used blob:/googleusercontent/ggpht URLs; the account avatar (/ogw/) is never media.
@@ -1141,6 +1128,11 @@ export class FlowAdapter {
           // Identity fallback below still applies.
         }
         keys.push(`url:${raw}`);
+        // Flow /asb/ media: a video tile's hover player URL is its thumbnail token plus a
+        // rendition suffix ("=mm,22,15"), and images add size suffixes ("=s512-rw"). The token
+        // alone is the asset's stable identity across those states.
+        const asbToken = raw.match(/^https:\/\/flow\.google\.com\/asb\/([^=?#]+)/)?.[1];
+        if (asbToken) keys.push(`asb:${asbToken}`);
         if (!raw.startsWith("blob:")) {
           try {
             const parsed = new URL(raw, window.location.href);
@@ -1193,18 +1185,32 @@ export class FlowAdapter {
   }
 
   private async stableMediaBaseline(page: Page, type: MediaType): Promise<MediaSnapshot[]> {
-    const deadline = Date.now() + 3_000;
+    await this.scrollGalleryToTop(page);
+    // The gallery is virtualized and lazy-loads thumbnails (slowly right after a reload), so wait
+    // for several consecutive identical, fully loaded snapshots before trusting it.
+    const deadline = Date.now() + 10_000;
     let previous = "";
     let stableRounds = 0;
     let snapshots: MediaSnapshot[] = [];
-    while (Date.now() < deadline && stableRounds < 2) {
+    while (Date.now() < deadline && stableRounds < 3) {
       snapshots = await this.mediaSnapshots(page, type);
-      const signature = JSON.stringify(snapshots.map((snapshot) => snapshot.keys).sort());
-      stableRounds = signature === previous ? stableRounds + 1 : 0;
+      const signature = JSON.stringify(snapshots.map((snapshot) => [snapshot.ready, snapshot.keys]));
+      const loaded = snapshots.every((snapshot) => snapshot.ready);
+      stableRounds = signature === previous && loaded ? stableRounds + 1 : 0;
       previous = signature;
-      if (stableRounds < 2) await page.waitForTimeout(400);
+      if (stableRounds < 3) await page.waitForTimeout(600);
     }
     return snapshots;
+  }
+
+  // New outputs are inserted at the top of the newest-first gallery; keep that region rendered.
+  private async scrollGalleryToTop(page: Page): Promise<void> {
+    await page.evaluate(() => {
+      for (const element of document.querySelectorAll("cdk-virtual-scroll-viewport, .virtual-scroll-container")) {
+        (element as HTMLElement).scrollTop = 0;
+      }
+      window.scrollTo(0, 0);
+    }).catch(() => undefined);
   }
 
   private async waitForNewMedia(
@@ -1229,6 +1235,7 @@ export class FlowAdapter {
           }
         }
       }).catch(() => undefined);
+      await this.scrollGalleryToTop(page);
       const candidates = selectNewMedia(await this.mediaSnapshots(page, type), baselineKeys);
       const readiness = await Promise.all(candidates.map(async (candidate) => ({
         candidate,

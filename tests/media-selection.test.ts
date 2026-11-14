@@ -40,3 +40,17 @@ test("ambiguous or missing identities fail closed", () => {
   assert.equal(resolveMediaIdentities(ambiguous, identity), null);
   assert.equal(resolveMediaIdentities([ready(0, "url:blob:other")], identity), null);
 });
+
+test("an older tile that loads late below known media is never mistaken for a new output", () => {
+  const baseline = ["url:https://flow.google.com/asb/raindrop-a"];
+  const current = [
+    ready(0, "url:https://flow.google.com/asb/new-beach"),
+    ready(1, "url:https://flow.google.com/asb/raindrop-a"),
+    ready(2, "url:https://flow.google.com/asb/raindrop-b-loaded-late"),
+  ];
+  assert.deepEqual(selectNewMedia(current, baseline), [current[0]]);
+  // Before the real output arrives, the late-loaded old tile alone must not count.
+  assert.deepEqual(selectNewMedia(current.slice(1), baseline), []);
+  // An empty project has nothing known, so any tile is new.
+  assert.deepEqual(selectNewMedia([ready(0, "url:x")], []), [ready(0, "url:x")]);
+});
