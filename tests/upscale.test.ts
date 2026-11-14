@@ -36,3 +36,19 @@ test("highest_available never assumes an unavailable factor", () => {
   assert.equal(chooseUpscaleOption(["1080p", "4k"], "highest_available"), "4k");
   assert.throws(() => chooseUpscaleOption(["Upscale 1x"], "4x"), /not offered/);
 });
+
+test("current Flow download labels classify by their wording when the video height is unknown", () => {
+  const options = extractUpscaleOptions([
+    { text: "270p Animated GIF" },
+    { text: "720p Original size" },
+    { text: "1080p Upscaled" },
+    { text: "4K Upscaled", disabled: true },
+  ]);
+  assert.deepEqual(options.map((o) => [o.id, o.kind, o.available]), [
+    ["270p", "preview", true],
+    ["720p", "original", true],
+    ["1080p", "upscale", true],
+    ["4k", "upscale", false],
+  ]);
+  assert.deepEqual(extractUpscaleLabels(["270p Animated GIF", "720p Original size", "1080p Upscaled"]), ["1080p"]);
+});

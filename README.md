@@ -216,6 +216,20 @@ FLOW_MCP_HEADLESS = "0"
 
 Open a new Codex task after changing MCP configuration. This does not restart Chromium or require another Google login.
 
+### Claude Code
+
+Register the server for your user (available in every project):
+
+```powershell
+claude mcp add google-flow --scope user -e FLOW_MCP_HEADLESS=0 -- node "C:\absolute\path\to\google-flow-mcp\dist\index.js"
+```
+
+Or commit a project-scoped `.mcp.json` (see [`examples/claude-code.mcp.json`](examples/claude-code.mcp.json)). Run `claude mcp list` to confirm it shows **connected**, then `/mcp` inside a session to see the `flow_*` tools.
+
+Long generations are fine with Claude Code's default tool timeout: generation tools return a persistent job ID, and the agent polls `flow_job_status`. To let one call wait longer, set `MCP_TOOL_TIMEOUT` (milliseconds) before launching `claude`.
+
+Claude Code also has browser and computer-use tools. The server's execution contract tells the agent never to operate `flow.google.com` or `labs.google` with them; if you see it try, stop it and ask it to use the `flow_*` tools.
+
 ### Google Antigravity
 
 Antigravity 2.0, Antigravity IDE, and Antigravity CLI support local stdio MCP servers. Clone into a stable directory—not Antigravity's disposable `scratch` directory—then run the supported installer:
@@ -322,6 +336,14 @@ The MCP never invents `4x`, silently downgrades a request, or substitutes an unr
 | `flow_download_job` | Download an already-created asset | No new generation |
 
 Every tool includes MCP-visible parameter descriptions so the agent knows how to use the live IDs returned by `flow_inspect_account`.
+
+### Default model: `best`
+
+When no model is given, both generation tools use `best`: the highest-quality model the account offers right now, ranked by tier (Pro/Quality/Ultra > standard > Fast/Flash > Lite) and then version. `flow_inspect_account` reports the current choice in `bestModels` (for example `nano-banana-pro` for images and `veo-3-1-quality` for video). Because the ranking reads the live model list, a newer release wins automatically and a retired model simply drops out. Higher tiers usually cost more credits; pass an explicit model ID (such as `veo-3-1-lite`) for cheaper drafts, or `ui-default` to keep whatever Flow currently has selected. Flow's retirement badges ("Leaving Dec 5") are reported as a model `note`, not as part of its ID.
+
+### Downloads
+
+Downloads fetch the real file rather than the gallery thumbnail: the full-resolution original for images, the 720p H.264+AAC MP4 for videos (falling back to 360p), and the upscaled file Flow delivers for `flow_upscale_video` (for example 1080p), saved alongside the original with an `-1080p` suffix.
 
 ### If an agent opens or scrolls the public Flow website
 

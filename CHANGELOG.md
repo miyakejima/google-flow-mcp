@@ -2,6 +2,40 @@
 
 All notable changes to Google Flow MCP are documented here.
 
+## [Unreleased]
+
+### Fixed
+
+- Recognize Flow's new `flow.google.com` origin alongside legacy `labs.google/fx/tools/flow`, rejecting lookalike hosts (fixes account connection failing with `flow_access_unavailable` on migrated accounts, #14)
+- Account connection honors the requested selection timeout instead of giving up after ~5 seconds, and reports the final URL plus a diagnostic screenshot on failure (from #15)
+- Workspace detection accepts `/project/...` paths and localized **New project** buttons on the new origin
+- The agent execution contract now forbids generic browser automation of `flow.google.com` as well as `labs.google`
+- On Windows, an elevated MCP no longer fails with "Chromium exited before CDP was ready (exit code 0)": Chrome's de-elevation relaunch is treated as a handoff, and managed browsers close via CDP so no orphan blocks later launches
+- Current Flow UI support (fixes `ui_changed` "Flow Agent settings could not be opened", #21): icons render as `<mat-icon>` instead of `<i>`; Agent mode is an opt-in chip that is now enabled before opening its settings; the "Never ask" preference is a Material radio (`value="2"` in `agent-settings-confirm-policy-label`) instead of `value="AUTO_APPROVE"`; ratio/output choices are `role="radio"` toggles in `radiogroup`s instead of tabs; the settings panel closes via Back
+
+- Agent settings panel and model menus animate over seconds; open/close/read now wait on actual state (up to 8s) instead of fixed 0.3-0.4s delays, and Material menus that ignore Escape are dismissed via their backdrop
+- Navigating to the legacy Flow URL no longer fails with "interrupted by another navigation" when Google redirects it to `flow.google.com`
+- Headless Chrome launches at 1440x900; at its ~750px default Flow hides the Agent toggle and settings, so capability inspection silently fell back to the legacy reader
+- Generated images are detected again (gallery tiles are `flow.google.com/asb/...` with `data-media-id`; the account avatar is no longer mistaken for media), fixing "did not expose a credit confirmation or begin generation" timeouts after successful generations
+- Downloads request the full-resolution original (`=d`) instead of the 512px WebP gallery thumbnail
+- Videos are detected again (current Flow shows `<flow-video-tile>` thumbnails, not `<video>` elements) and download as the real 720p MP4 (`=m22`, then `=m18`); image detection no longer matches video thumbnails
+- Media identity is stable: `/asb/` assets are also keyed by token, so a hovered video tile (thumbnail swapped for a player) is not mistaken for new output, and older job records still resolve
+- New outputs must precede every previously known tile (Flow inserts at the top); the baseline waits for a fully loaded, stable gallery. Previously a lazy-loaded older video could be returned as a new generation
+- Upscale options are classified from Flow's labels ("1080p Upscaled", "720p Original size"), so `availableUpscales` is populated; nested asset menus are fully closed
+- Robustness from review: Agent toggle/model menus waited on rather than fixed delays; Save scoped to the panel's text button; the selected model is verified after switching; model groups classified by family; credit-approval detection limited to real approval buttons; clear error when Chrome hands off to a browser already using the profile
+
+### Added
+
+- Generation tools default to `model: "best"` (highest-quality available model, re-evaluated live); `flow_inspect_account` reports `bestModels`; retirement badges are exposed as `note`
+
+### Security
+
+- Updated `@modelcontextprotocol/sdk` to 1.32.x, `zod` past the 4.6.6 advisory, and transitive `body-parser`, `fast-uri`, `hono`, `qs`, `ip-address`, `proxy-addr`; `npm audit` reports 0 vulnerabilities
+
+### Added
+
+- Claude Code setup instructions and `examples/claude-code.mcp.json`
+
 ## [0.2.3] - 2026-07-19
 
 ### Fixed

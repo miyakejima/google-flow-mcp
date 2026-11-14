@@ -9,6 +9,7 @@ import { FlowError } from "./errors.js";
 import { validateAccountId } from "./paths.js";
 import { FlowStore } from "./store.js";
 import { FLOW_URL } from "./types.js";
+import { isFlowPageUrl } from "./navigation.js";
 import type { TransferredCookie } from "./types.js";
 
 interface AccountBrowser {
@@ -77,10 +78,13 @@ async function reserveLocalPort(): Promise<number> {
   });
 }
 
-async function waitForCdp(endpoint: string, process: ChildProcess, timeoutMs = 20_000): Promise<void> {
+export async function waitForCdp(endpoint: string, process: Pick<ChildProcess, "exitCode">, timeoutMs = 20_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    if (process.exitCode !== null) {
+    // Exit code 0 is a handoff, not a crash: on Windows an elevated launch makes
+    // Chrome relaunch itself de-elevated (adding --do-not-de-elevate) with the
+    // same arguments, so the relaunched browser still serves CDP on this port.
+    if (process.exitCode !== null && process.exitCode !== 0) {
       throw new Error(`Chromium exited before CDP was ready (exit code ${process.exitCode}).`);
     }
     try {
@@ -91,10 +95,27 @@ async function waitForCdp(endpoint: string, process: ChildProcess, timeoutMs = 2
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
+  if (process.exitCode === 0) {
+    // The launcher handed off but nothing serves our port: Chrome forwarded the launch to a
+    // browser that already owns this profile (e.g. a leftover window) instead of relaunching.
+    throw new Error(
+      `Chromium handed the launch off but never exposed CDP at ${endpoint} within ${timeoutMs / 1_000} seconds. `
+      + "Another Chrome window is probably still using this Flow profile; close it and retry.",
+    );
+  }
   throw new Error(`Chromium did not expose CDP at ${endpoint} within ${timeoutMs / 1_000} seconds.`);
 }
 
 async function closeManagedBrowser(browser: Browser, process: ChildProcess): Promise<void> {
+  // browser.close() only disconnects a CDP-attached browser, and after a
+  // relaunch handoff the spawned process is already gone, so ask the browser
+  // itself to exit.
+  try {
+    const session = await browser.newBrowserCDPSession();
+    await session.send("Browser.close");
+  } catch {
+    // Already closed or disconnected.
+  }
   await browser.close().catch(() => undefined);
   if (process.exitCode === null && !process.killed) process.kill();
 }
@@ -154,7 +175,7 @@ export class BrowserManager {
       const browser = await chromium.connectOverCDP(session.endpoint);
       const context = browser.contexts()[0];
       if (!context) return null;
-      const page = context.pages().find((candidate) => candidate.url().startsWith("https://labs.google/"))
+      const page = context.pages().find((candidate) => isFlowPageUrl(candidate.url()))
         ?? context.pages()[0]
         ?? (await context.newPage());
       this.preparePage(page);
@@ -200,7 +221,7 @@ export class BrowserManager {
         const browser = await chromium.connectOverCDP(account.cdpUrl);
         const context = browser.contexts()[0];
         if (!context) throw new FlowError("browser_error", `No browser context was exposed at ${account.cdpUrl}.`);
-        const page = context.pages().find((candidate) => candidate.url().startsWith("https://labs.google/"))
+        const page = context.pages().find((candidate) => isFlowPageUrl(candidate.url()))
           ?? (await context.newPage());
         this.preparePage(page);
         this.browsers.set(accountId, { context, page, close: async () => undefined });
@@ -226,7 +247,11 @@ export class BrowserManager {
         "--profile-directory=Default",
         "--no-first-run",
         "--no-default-browser-check",
-        ...(process.env.FLOW_MCP_HEADLESS === "1" || account.headlessAfterLogin ? ["--headless=new"] : []),
+        // Headless Chrome defaults to a ~750px viewport, where Flow switches to a
+        // compact prompt box without the Agent toggle or its settings.
+        ...(process.env.FLOW_MCP_HEADLESS === "1" || account.headlessAfterLogin
+          ? ["--headless=new", "--window-size=1440,900"]
+          : []),
         `--app=${FLOW_URL}`,
       ];
       const processHandle = spawn(executablePath, args, {
@@ -246,7 +271,7 @@ export class BrowserManager {
         await closeManagedBrowser(browser, processHandle);
         throw new FlowError("browser_error", "Managed Chromium started without a usable browser context.");
       }
-      const page = context.pages().find((candidate) => candidate.url().startsWith("https://labs.google/"))
+      const page = context.pages().find((candidate) => isFlowPageUrl(candidate.url()))
         ?? context.pages()[0]
         ?? (await context.newPage());
       this.preparePage(page);
