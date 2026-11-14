@@ -14,7 +14,7 @@ import {
   selectNewMedia,
   type MediaSnapshot,
 } from "./media-selection.js";
-import { canonicalFlowProjectUrl, isFlowPageUrl } from "./navigation.js";
+import { canonicalFlowProjectUrl, gotoPage, isFlowPageUrl } from "./navigation.js";
 import { safeFileStem } from "./paths.js";
 import { FlowStore } from "./store.js";
 import {
@@ -187,7 +187,7 @@ export class FlowAdapter {
         // navigate to Flow after the user selects an existing account.
         ? `https://accounts.google.com/AccountChooser?continue=${encodeURIComponent("https://myaccount.google.com/")}`
         : FLOW_URL;
-      await page.goto(startUrl, { waitUntil: "domcontentloaded" });
+      await gotoPage(page, startUrl);
       await this.store.touchAccount(account.id);
       const deadline = Date.now() + selectionWaitSeconds * 1_000;
       let chooserCompleted = !options.chooseGoogleAccount;
@@ -198,7 +198,7 @@ export class FlowAdapter {
         await page.waitForTimeout(1_000);
         if (!chooserCompleted && /^https:\/\/myaccount\.google\.com(?:\/|$)/i.test(page.url())) {
           chooserCompleted = true;
-          await page.goto(FLOW_URL, { waitUntil: "domcontentloaded" });
+          await gotoPage(page, FLOW_URL);
         }
         access = await this.pageAccessState(page);
       }
@@ -482,9 +482,9 @@ export class FlowAdapter {
   private async readyPage(accountId: string, requireLogin: boolean, url?: string): Promise<Page> {
     const page = await this.browsers.pageFor(accountId);
     if (!isFlowPageUrl(page.url())) {
-      await page.goto(url || FLOW_URL, { waitUntil: "domcontentloaded" });
+      await gotoPage(page, url || FLOW_URL);
     } else if (url && page.url() !== url) {
-      await page.goto(url, { waitUntil: "domcontentloaded" });
+      await gotoPage(page, url);
     }
     await page.waitForTimeout(1_000);
     if (requireLogin) {
@@ -574,7 +574,7 @@ export class FlowAdapter {
   private async openProject(page: Page, projectName?: string): Promise<void> {
     const projectWorkspaceUrl = canonicalFlowProjectUrl(page.url());
     if (projectWorkspaceUrl !== page.url()) {
-      await page.goto(projectWorkspaceUrl, { waitUntil: "domcontentloaded" });
+      await gotoPage(page, projectWorkspaceUrl);
       await page.waitForTimeout(1_000);
     }
     if (await firstVisible([this.promptLocator(page)])) return;

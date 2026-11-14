@@ -239,7 +239,11 @@ export class BrowserManager {
         "--profile-directory=Default",
         "--no-first-run",
         "--no-default-browser-check",
-        ...(process.env.FLOW_MCP_HEADLESS === "1" || account.headlessAfterLogin ? ["--headless=new"] : []),
+        // Headless Chrome defaults to a ~750px viewport, where Flow switches to a
+        // compact prompt box without the Agent toggle or its settings.
+        ...(process.env.FLOW_MCP_HEADLESS === "1" || account.headlessAfterLogin
+          ? ["--headless=new", "--window-size=1440,900"]
+          : []),
         `--app=${FLOW_URL}`,
       ];
       const processHandle = spawn(executablePath, args, {

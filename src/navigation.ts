@@ -1,3 +1,18 @@
+type Navigable = Pick<import("playwright").Page, "goto" | "waitForLoadState">;
+
+// Google redirects the legacy labs.google/fx/tools/flow URL to flow.google.com
+// (and sign-in pages redirect onward), which Playwright reports as the goto
+// being "interrupted by another navigation". That is the expected destination,
+// so wait for it to load instead of failing.
+export async function gotoPage(page: Navigable, url: string): Promise<void> {
+  try {
+    await page.goto(url, { waitUntil: "domcontentloaded" });
+  } catch (error) {
+    if (!/interrupted by another navigation/i.test(String((error as Error)?.message))) throw error;
+    await page.waitForLoadState("domcontentloaded").catch(() => undefined);
+  }
+}
+
 export function isFlowPageUrl(rawUrl: string): boolean {
   try {
     const url = new URL(rawUrl);
